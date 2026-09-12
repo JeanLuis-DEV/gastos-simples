@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gastos-simples",
+  "compatibility_date": "2026-09-09",
+  "pages_build_output_dir": "./dist",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "gastos-simples",
+      "database_id": "SUBSTITUIR_NA_ETAPA_DE_INFRAESTRUTURA",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
