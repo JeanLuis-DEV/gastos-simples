@@ -7,7 +7,7 @@
     {
       "binding": "DB",
       "database_name": "gastos-simples",
-      "database_id": "SUBSTITUIR_NA_ETAPA_DE_INFRAESTRUTURA",
+      "database_id": "041f5c4e-8775-4ced-924f-a4c90b5217b9",
       "migrations_dir": "migrations"
     }
   ]
