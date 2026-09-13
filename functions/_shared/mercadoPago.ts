@@ -139,6 +139,14 @@ export const hasAccess = (
   subscription: MercadoSubscription,
   now = new Date(),
 ) => ["active", "trial"].includes(normalizedStatus(subscription, now));
+export function nextPaymentAt(
+  subscription: MercadoSubscription,
+  status = normalizedStatus(subscription),
+) {
+  return ["active", "trial"].includes(status)
+    ? subscription.next_payment_date
+    : undefined;
+}
 export function assertExternalReference(
   subscription: MercadoSubscription,
   uid: string,
@@ -227,7 +235,7 @@ export async function persistSubscription(
       normalized,
       subscription.status,
       trialEnd(subscription) ?? null,
-      subscription.next_payment_date ?? null,
+      nextPaymentAt(subscription, normalized) ?? null,
       providerUpdated,
       subscription.date_created ?? now,
       now,

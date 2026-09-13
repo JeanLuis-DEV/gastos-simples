@@ -5,6 +5,7 @@ import {
   assertSubscriptionOwnership,
   assertSubscriptionPlan,
   isOlderProviderUpdate,
+  nextPaymentAt,
   normalizedStatus,
   providerTimestamp,
   subscriptionStartAction,
@@ -140,5 +141,16 @@ describe("assinatura Mercado Pago", () => {
     });
     expect(isOlderProviderUpdate(old, recent)).toBe(true);
     expect(isOlderProviderUpdate(recent, old)).toBe(false);
+  });
+  it("não mantém próxima cobrança em estados sem renovação ativa", () => {
+    const subscription = {
+      id: "p",
+      status: "cancelled",
+      next_payment_date: "2028-02-10T10:00:00Z",
+    };
+    expect(nextPaymentAt(subscription, "cancelled")).toBeUndefined();
+    expect(
+      nextPaymentAt({ ...subscription, status: "authorized" }, "active"),
+    ).toBe("2028-02-10T10:00:00Z");
   });
 });

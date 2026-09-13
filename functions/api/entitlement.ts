@@ -1,7 +1,11 @@
 import { authenticate, registerUser } from "../_shared/auth";
 import { hasAdministrativeAccess } from "../_shared/admin";
 import { handle, json } from "../_shared/http";
-import { getSubscription, persistSubscription } from "../_shared/mercadoPago";
+import {
+  getSubscription,
+  nextPaymentAt,
+  persistSubscription,
+} from "../_shared/mercadoPago";
 import type { PagesContext } from "../types";
 export async function onRequestGet(context: PagesContext) {
   return handle(context, async () => {
@@ -40,7 +44,7 @@ export async function onRequestGet(context: PagesContext) {
       {
         status,
         hasAccess: ["active", "trial"].includes(status),
-        nextPaymentAt: subscription.next_payment_date,
+        nextPaymentAt: nextPaymentAt(subscription, status),
       },
       200,
       context.request,
