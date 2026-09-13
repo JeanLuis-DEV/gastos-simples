@@ -41,6 +41,11 @@ describe("checkout protegido do Mercado Pago", () => {
       expect(onSubscribe).toHaveBeenCalledWith("card_token_1234567890"),
     );
     expect(initMercadoPago).toHaveBeenCalledTimes(1);
-    expect(screen.getByText(/não recebe nem armazena/)).toBeTruthy();
+    expect(
+      screen.getByText(/enviados com segurança diretamente ao Mercado Pago/),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/não vê nem armazena o número do cartão/),
+    ).toBeTruthy();
   });
 });

@@ -33,8 +33,9 @@ export function SubscriptionCheckoutView({
         <p className="eyebrow">Pagamento seguro</p>
         <h1>Ative seus 7 dias grátis</h1>
         <p>
-          O cartão será tokenizado pelo Mercado Pago. O aplicativo não recebe nem
-          armazena o número ou o código de segurança.
+          Seus dados do cartão são enviados com segurança diretamente ao Mercado
+          Pago. O Gastos Simples não vê nem armazena o número do cartão ou o
+          código de segurança.
         </p>
         <Card>
           {error && <Alert type="error">{error}</Alert>}
