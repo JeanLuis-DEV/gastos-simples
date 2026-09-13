@@ -21,6 +21,7 @@ export function SettingsView({
   user,
   entitlement,
   onLogout,
+  onSubscriptionChanged = () => undefined,
   onChanged,
   onError,
   onMessage,
@@ -34,6 +35,7 @@ export function SettingsView({
   user: AuthUser;
   entitlement: Entitlement;
   onLogout: () => void;
+  onSubscriptionChanged?: (entitlement: Entitlement) => void;
   profiles?: FinancialProfile[];
   transactions?: Transaction[];
   selectedProfileId?: string;
@@ -112,7 +114,7 @@ export function SettingsView({
         onMessage("Aplicativo reiniciado. Seus dados locais foram removidos.");
         await onChanged();
       } else {
-        await cancelSubscription();
+        onSubscriptionChanged(await cancelSubscription());
         onMessage("Cancelamento solicitado ao Mercado Pago.");
       }
       setAction(undefined);

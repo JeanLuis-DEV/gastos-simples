@@ -35,7 +35,16 @@ export async function onRequestPost(context: PagesContext) {
       `/preapproval/${encodeURIComponent(current.id)}`,
       { method: "PUT", body: JSON.stringify({ status: "cancelled" }) },
     );
-    await persistSubscription(context.env, identity.uid, cancelled);
-    return json(context.env, { ok: true }, 200, context.request);
+    const status = await persistSubscription(
+      context.env,
+      identity.uid,
+      cancelled,
+    );
+    return json(
+      context.env,
+      { status, hasAccess: false },
+      200,
+      context.request,
+    );
   });
 }

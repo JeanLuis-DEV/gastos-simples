@@ -18,6 +18,8 @@ export type Env = {
   ADMIN_FIREBASE_UIDS?: string;
   MERCADO_PAGO_ACCESS_TOKEN: string;
   MERCADO_PAGO_PLAN_ID: string;
+  MERCADO_PAGO_PUBLIC_KEY?: string;
+  MERCADO_PAGO_TEST_PAYER_EMAIL?: string;
   MERCADO_PAGO_WEBHOOK_SECRET?: string;
   APP_ORIGIN: string;
 };

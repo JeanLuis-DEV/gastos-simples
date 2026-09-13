@@ -26,6 +26,12 @@
 .hero > .as-button {
   justify-self: center;
 }
+.subscription-checkout {
+  width: min(100%, 42rem);
+}
+.subscription-checkout iframe {
+  max-width: 100%;
+}
 .hero p {
   color: var(--as-color-text-secondary);
 }

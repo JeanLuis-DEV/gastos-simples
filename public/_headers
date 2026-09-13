@@ -1,6 +1,7 @@
 /*
+  Strict-Transport-Security: max-age=31536000
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
-  Content-Security-Policy: default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://lh3.googleusercontent.com; connect-src 'self' https://*.googleapis.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://api.mercadopago.com; frame-src https://*.firebaseapp.com https://accounts.google.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://www.mercadopago.com.br
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com https://sdk.mercadopago.com https://http2.mlstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://lh3.googleusercontent.com; connect-src 'self' https://*.googleapis.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://api.mercadopago.com https://*.mercadopago.com https://api.mercadolibre.com https://http2.mlstatic.com; frame-src https://*.firebaseapp.com https://accounts.google.com https://*.mercadopago.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://www.mercadopago.com.br

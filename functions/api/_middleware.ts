@@ -1,4 +1,4 @@
-import { onOptions } from "../_shared/http";
+import { onOptions, withSecurityHeaders } from "../_shared/http";
 import type { Env } from "../types";
 type MiddlewareContext = {
   request: Request;
@@ -7,5 +7,5 @@ type MiddlewareContext = {
 };
 export async function onRequest(context: MiddlewareContext) {
   if (context.request.method === "OPTIONS") return onOptions(context);
-  return context.next();
+  return withSecurityHeaders(await context.next());
 }

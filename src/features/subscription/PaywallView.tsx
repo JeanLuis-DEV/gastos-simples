@@ -1,4 +1,5 @@
 import { Alert, Button, Card, Loading } from "@apps-simples/ui";
+import { COMMERCIAL_PLAN_PRICE_LABEL } from "../../../shared/commercialPlan";
 import type { Entitlement } from "../../domain/entitlement";
 
 const messages: Record<Entitlement["status"], string> = {
@@ -50,7 +51,7 @@ export function PaywallView({
         <Card>
           <div className="offer-price">
             <strong>7 dias grátis</strong>
-            <span>depois R$ 1,99 por mês</span>
+            <span>depois {COMMERCIAL_PLAN_PRICE_LABEL} por mês</span>
           </div>
           <ul>
             <li>Renovação recorrente pelo Mercado Pago</li>

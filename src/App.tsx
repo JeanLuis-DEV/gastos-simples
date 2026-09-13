@@ -5,7 +5,12 @@ import type { Entitlement } from "./domain/entitlement";
 import { DashboardApp } from "./features/dashboard/DashboardApp";
 import { LoginView } from "./features/auth/LoginView";
 import { PaywallView } from "./features/subscription/PaywallView";
-import { getEntitlement, startSubscription } from "./services/api";
+import { SubscriptionCheckoutView } from "./features/subscription/SubscriptionCheckoutView";
+import {
+  getEntitlement,
+  getSubscriptionConfig,
+  startSubscription,
+} from "./services/api";
 import {
   initializeAuth,
   loginWithGoogle,
@@ -13,15 +18,6 @@ import {
   type AuthUser,
 } from "./services/auth";
 
-export function checkoutUrl(value: string) {
-  const url = new URL(value);
-  if (
-    url.protocol !== "https:" ||
-    !/(^|\.)mercadopago\.com(?:\.[a-z]{2})?$/i.test(url.hostname)
-  )
-    throw new Error("O Mercado Pago não forneceu uma URL de checkout válida.");
-  return url;
-}
 export function subscriptionReturnError(search = location.search) {
   const params = new URLSearchParams(search);
   if (params.get("assinatura") !== "retorno") return "";
@@ -42,6 +38,7 @@ export default function App() {
   const [error, setError] = useState(() => subscriptionReturnError());
   const [entitlement, setEntitlement] = useState<Entitlement>();
   const [entitlementLoading, setEntitlementLoading] = useState(false);
+  const [checkoutPublicKey, setCheckoutPublicKey] = useState("");
   const configError = (() => {
     try {
       getPublicConfig();
@@ -114,6 +111,18 @@ export default function App() {
         }}
       />
     );
+  if (!entitlement?.hasAccess && checkoutPublicKey)
+    return (
+      <SubscriptionCheckoutView
+        email={user.email}
+        publicKey={checkoutPublicKey}
+        onBack={() => setCheckoutPublicKey("")}
+        onSubscribe={async (cardTokenId) => {
+          await startSubscription(cardTokenId);
+          location.assign("/?assinatura=retorno");
+        }}
+      />
+    );
   if (!entitlement?.hasAccess)
     return (
       <PaywallView
@@ -126,10 +135,8 @@ export default function App() {
           if (entitlementLoading) return;
           setError("");
           setEntitlementLoading(true);
-          void startSubscription()
-            .then(({ checkoutUrl: value }) =>
-              location.assign(checkoutUrl(value)),
-            )
+          void getSubscriptionConfig()
+            .then(({ publicKey }) => setCheckoutPublicKey(publicKey))
             .catch((e) => setError((e as Error).message))
             .finally(() => setEntitlementLoading(false));
         }}
@@ -140,6 +147,7 @@ export default function App() {
       user={user}
       entitlement={entitlement}
       onLogout={() => void logout()}
+      onSubscriptionChanged={setEntitlement}
     />
   );
 }

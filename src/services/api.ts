@@ -21,7 +21,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body;
 }
 export const getEntitlement = () => request<Entitlement>("/entitlement");
-export const startSubscription = () =>
-  request<{ checkoutUrl: string }>("/subscription/start", { method: "POST" });
+export const getSubscriptionConfig = () =>
+  request<{ publicKey: string }>("/subscription/config");
+export const startSubscription = (cardTokenId: string) =>
+  request<Entitlement>("/subscription/start", {
+    method: "POST",
+    body: JSON.stringify({ cardTokenId }),
+  });
 export const cancelSubscription = () =>
-  request<{ ok: true }>("/subscription/cancel", { method: "POST" });
+  request<Entitlement>("/subscription/cancel", { method: "POST" });

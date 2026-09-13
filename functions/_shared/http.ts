@@ -1,11 +1,28 @@
 import type { Env } from "../types";
 
+const SECURITY_HEADERS: Record<string, string> = {
+  "Strict-Transport-Security": "max-age=31536000",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+  "Content-Security-Policy":
+    "default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com https://sdk.mercadopago.com https://http2.mlstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://lh3.googleusercontent.com; connect-src 'self' https://*.googleapis.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://api.mercadopago.com https://*.mercadopago.com https://api.mercadolibre.com https://http2.mlstatic.com; frame-src https://*.firebaseapp.com https://accounts.google.com https://*.mercadopago.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://www.mercadopago.com.br",
+};
+
+export function withSecurityHeaders(response: Response) {
+  const secured = new Response(response.body, response);
+  for (const [name, value] of Object.entries(SECURITY_HEADERS))
+    secured.headers.set(name, value);
+  return secured;
+}
+
 export function json(env: Env, body: unknown, status = 200, request?: Request) {
   const origin = request?.headers.get("Origin");
   const headers: Record<string, string> = {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
-    "X-Content-Type-Options": "nosniff",
+    ...SECURITY_HEADERS,
   };
   if (origin === env.APP_ORIGIN) {
     headers["Access-Control-Allow-Origin"] = origin;

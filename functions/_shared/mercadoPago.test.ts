@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertExternalReference,
+  assertPlanConfiguration,
   assertSubscriptionOwnership,
   assertSubscriptionPlan,
   isOlderProviderUpdate,
@@ -9,6 +10,50 @@ import {
   subscriptionStartAction,
 } from "./mercadoPago";
 describe("assinatura Mercado Pago", () => {
+  const validPlan = {
+    id: "plan",
+    status: "active",
+    reason: "Gastos Simples Premium",
+    back_url: "https://gastos-simples.pages.dev/?assinatura=retorno",
+    application_id: 10,
+    collector_id: 1,
+    auto_recurring: {
+      frequency: 1,
+      frequency_type: "months",
+      transaction_amount: 4.99,
+      currency_id: "BRL",
+      free_trial: { frequency: 7, frequency_type: "days" },
+    },
+  };
+
+  it("aceita somente o plano comercial definitivo", () => {
+    expect(() =>
+      assertPlanConfiguration(validPlan, { id: 1 }, "plan"),
+    ).not.toThrow();
+  });
+
+  it.each([
+    ["preço antigo", { transaction_amount: 1.99 }],
+    ["moeda", { currency_id: "USD" }],
+    ["frequência", { frequency: 2 }],
+    ["tipo da frequência", { frequency_type: "days" }],
+    ["duração", { repetitions: 12 }],
+    ["teste grátis", { free_trial: { frequency: 14, frequency_type: "days" } }],
+  ])("rejeita divergência de %s", (_label, recurringChange) => {
+    expect(() =>
+      assertPlanConfiguration(
+        {
+          ...validPlan,
+          auto_recurring: {
+            ...validPlan.auto_recurring,
+            ...recurringChange,
+          },
+        },
+        { id: 1 },
+        "plan",
+      ),
+    ).toThrow(/configurado incorretamente/);
+  });
   it("identifica período gratuito real do plano", () => {
     expect(
       normalizedStatus(

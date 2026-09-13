@@ -135,4 +135,23 @@ describe("recuperação do webhook", () => {
     ).resolves.toBe("duplicate");
     expect(attempts).toBe(2);
   });
+
+  it("aceita atualização antiga sem sobrescrever o estado atual", async () => {
+    let persisted = false;
+    let result = "";
+    await expect(
+      reconcileWebhook({
+        exists: async () => false,
+        isOlder: async () => true,
+        persist: async () => {
+          persisted = true;
+        },
+        record: async (value) => {
+          result = value;
+        },
+      }),
+    ).resolves.toBe("stale");
+    expect(persisted).toBe(false);
+    expect(result).toBe("stale");
+  });
 });

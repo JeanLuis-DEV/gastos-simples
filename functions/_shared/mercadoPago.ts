@@ -1,4 +1,5 @@
 import type { Env } from "../types";
+import { COMMERCIAL_PLAN } from "../../shared/commercialPlan";
 import { HttpError, assertEnv } from "./http";
 export type MercadoSubscription = {
   id: string;
@@ -20,6 +21,8 @@ export type MercadoSubscription = {
 export type MercadoPlan = {
   id: string;
   status: string;
+  reason?: string;
+  back_url?: string;
   application_id?: number;
   collector_id?: number;
   auto_recurring?: {
@@ -32,6 +35,35 @@ export type MercadoPlan = {
   };
 };
 export type MercadoAccount = { id: number };
+
+export function assertPlanConfiguration(
+  plan: MercadoPlan,
+  account: MercadoAccount,
+  expectedPlanId: string,
+) {
+  const recurring = plan.auto_recurring;
+  const amount = Number(recurring?.transaction_amount);
+  if (
+    plan.id !== expectedPlanId ||
+    plan.status !== "active" ||
+    plan.reason !== COMMERCIAL_PLAN.reason ||
+    plan.back_url !== `https://gastos-simples.pages.dev${COMMERCIAL_PLAN.backPath}` ||
+    !Number.isSafeInteger(account.id) ||
+    plan.collector_id !== account.id ||
+    !recurring ||
+    recurring.frequency !== COMMERCIAL_PLAN.frequency ||
+    recurring.frequency_type !== COMMERCIAL_PLAN.frequencyType ||
+    amount !== COMMERCIAL_PLAN.amount ||
+    recurring.currency_id !== COMMERCIAL_PLAN.currency ||
+    (recurring.repetitions !== undefined && recurring.repetitions > 0) ||
+    recurring.free_trial?.frequency !== COMMERCIAL_PLAN.trialFrequency ||
+    recurring.free_trial.frequency_type !== COMMERCIAL_PLAN.trialFrequencyType
+  )
+    throw new HttpError(
+      503,
+      "O plano Premium está configurado incorretamente.",
+    );
+}
 export async function mpRequest<T>(
   env: Env,
   path: string,
@@ -46,11 +78,12 @@ export async function mpRequest<T>(
       ...init?.headers,
     },
   });
-  if (!response.ok)
+  if (!response.ok) {
     throw new HttpError(
       response.status >= 500 ? 503 : 400,
       "Não foi possível processar a assinatura.",
     );
+  }
   return response.json() as Promise<T>;
 }
 export const getSubscription = (env: Env, id: string) =>
@@ -64,26 +97,7 @@ export async function validateConfiguredPlan(env: Env) {
     ),
     mpRequest<MercadoAccount>(env, "/users/me"),
   ]);
-  const recurring = plan.auto_recurring;
-  const amount = Number(recurring?.transaction_amount);
-  if (
-    plan.id !== env.MERCADO_PAGO_PLAN_ID ||
-    plan.status !== "active" ||
-    !Number.isSafeInteger(account.id) ||
-    plan.collector_id !== account.id ||
-    !recurring ||
-    recurring.frequency !== 1 ||
-    recurring.frequency_type !== "months" ||
-    amount !== 1.99 ||
-    recurring.currency_id !== "BRL" ||
-    (recurring.repetitions !== undefined && recurring.repetitions > 0) ||
-    recurring.free_trial?.frequency !== 7 ||
-    recurring.free_trial.frequency_type !== "days"
-  )
-    throw new HttpError(
-      503,
-      "O plano Premium está configurado incorretamente.",
-    );
+  assertPlanConfiguration(plan, account, env.MERCADO_PAGO_PLAN_ID);
   return { plan, account };
 }
 function trialEnd(subscription: MercadoSubscription) {

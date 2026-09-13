@@ -37,10 +37,12 @@ export function DashboardApp({
   user,
   entitlement,
   onLogout,
+  onSubscriptionChanged,
 }: {
   user: AuthUser;
   entitlement: Entitlement;
   onLogout: () => void;
+  onSubscriptionChanged?: (entitlement: Entitlement) => void;
 }) {
   const [view, setView] = useState<View>("dashboard"),
     [month, setMonth] = useState(localCivilMonth()),
@@ -290,6 +292,7 @@ export function DashboardApp({
             user={user}
             entitlement={entitlement}
             onLogout={onLogout}
+            onSubscriptionChanged={onSubscriptionChanged}
             onChanged={refresh}
             onError={setError}
             onMessage={setMessage}

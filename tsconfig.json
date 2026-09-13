@@ -17,5 +17,5 @@
     "noEmit": true,
     "types": ["vite/client", "vitest/globals"]
   },
-  "include": ["src", "functions", "vite.config.ts"]
+  "include": ["src", "functions", "shared", "vite.config.ts"]
 }

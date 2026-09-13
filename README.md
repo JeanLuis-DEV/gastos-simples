@@ -7,17 +7,17 @@ Os nomes dos perfis integram o backup local. Os relatórios PDF são gerados e b
 ## Desenvolvimento local
 
 1. Copie `.env.example` para `.env.local` e preencha apenas a configuração pública do Firebase.
-2. Crie `.dev.vars` (não versionado) com `FIREBASE_PROJECT_ID`, `MERCADO_PAGO_ACCESS_TOKEN`, `MERCADO_PAGO_PLAN_ID`, `MERCADO_PAGO_WEBHOOK_SECRET` quando aplicável e `APP_ORIGIN`. Opcionalmente, `ADMIN_FIREBASE_UIDS` aceita UIDs Firebase separados por vírgulas para acesso administrativo validado exclusivamente no backend.
+2. Crie `.dev.vars` (não versionado) com `FIREBASE_PROJECT_ID`, `MERCADO_PAGO_ACCESS_TOKEN`, `MERCADO_PAGO_PUBLIC_KEY`, `MERCADO_PAGO_PLAN_ID`, `MERCADO_PAGO_WEBHOOK_SECRET` quando aplicável e `APP_ORIGIN`. Opcionalmente, `ADMIN_FIREBASE_UIDS` aceita UIDs Firebase separados por vírgulas para acesso administrativo validado exclusivamente no backend. Em sandbox, `MERCADO_PAGO_TEST_PAYER_EMAIL` pode definir um pagador sintético no formato oficial; nunca configure essa variável em produção.
 3. Instale e valide com `npm install`, `npm test` e `npm run build`.
 4. Para Functions + D1 local, instale/use Wrangler sem versionar credenciais e execute `npx wrangler pages dev dist --d1 DB=gastos-simples` após criar o banco local.
 
-## Infraestrutura posterior
+## Infraestrutura
 
-- Criar o banco D1 e substituir `database_id` no `wrangler.jsonc`.
-- Aplicar `npx wrangler d1 migrations apply gastos-simples --remote`.
-- Criar o plano real do Mercado Pago: BRL 1,99 por mês, teste grátis de 7 dias, duração ilimitada. Registrar o ID em `MERCADO_PAGO_PLAN_ID`.
-- Cadastrar secrets/variáveis do Pages e configurar os domínios autorizados no Firebase.
-- Criar o projeto Pages, associar o repositório futuro e validar webhook/checkout em ambiente de teste antes de produção.
+- O D1 remoto `gastos-simples` usa as migrations versionadas deste repositório.
+- O plano Gastos Simples Premium custa BRL 4,99 por mês, oferece sete dias grátis quando elegível e tem duração ilimitada.
+- As variáveis e secrets do Pages são configurados fora do repositório. O frontend recebe somente a Public Key necessária ao Card Payment Brick; Access Token, plano e eventual segredo do webhook permanecem no backend.
+- O cartão é tokenizado diretamente pelo Mercado Pago no Card Payment Brick. O aplicativo recebe apenas o token efêmero e o envia ao backend autenticado para criar a assinatura associada ao plano e ao UID Firebase.
+- O webhook público de Assinaturas é `/api/webhooks/mercado-pago` e sempre reconsulta a assinatura pela API autenticada antes de atualizar o entitlement.
 
 Não há Firebase Hosting, Firestore, Storage, Admin SDK, PWA, service worker, manifest, Android ou Capacitor. O frontend não contém bypass de assinatura. O acesso administrativo não usa e-mail nem dados enviados pelo cliente: compara somente o UID do token Firebase já validado com `ADMIN_FIREBASE_UIDS` no backend.
 

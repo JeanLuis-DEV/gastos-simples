@@ -1,6 +1,7 @@
 import { handle, HttpError, json } from "../../_shared/http";
 import {
   getSubscription,
+  isOlderProviderUpdate,
   persistSubscription,
   providerTimestamp,
 } from "../../_shared/mercadoPago";
@@ -75,12 +76,17 @@ export async function webhookEventKey(
 }
 export async function reconcileWebhook(actions: {
   exists: () => Promise<boolean>;
+  isOlder?: () => Promise<boolean>;
   persist: () => Promise<void>;
-  record: () => Promise<void>;
+  record: (result: "processed" | "stale") => Promise<void>;
 }) {
   if (await actions.exists()) return "duplicate";
+  if (await actions.isOlder?.()) {
+    await actions.record("stale");
+    return "stale";
+  }
   await actions.persist();
-  await actions.record();
+  await actions.record("processed");
   return "processed";
 }
 export async function onRequestPost(context: PagesContext) {
@@ -94,10 +100,7 @@ export async function onRequestPost(context: PagesContext) {
     const queryResourceId = url.searchParams.get("data.id")?.trim() ?? "";
     const resourceId = String(queryResourceId || body?.data?.id || "").trim();
     const type = url.searchParams.get("type") ?? body?.type ?? "";
-    if (
-      !resourceId ||
-      !["subscription_preapproval", "preapproval"].includes(type)
-    )
+    if (!resourceId || type !== "subscription_preapproval")
       throw new HttpError(400, "Evento não suportado.");
     if (context.env.MERCADO_PAGO_WEBHOOK_SECRET) {
       if (!queryResourceId || queryResourceId !== resourceId)
@@ -108,7 +111,6 @@ export async function onRequestPost(context: PagesContext) {
         queryResourceId,
       );
     }
-    await rateLimit(context.env, `webhook:${resourceId}`, 30, 300);
     const subscription = await getSubscription(context.env, resourceId);
     if (!subscription.external_reference)
       throw new HttpError(400, "Assinatura sem vínculo de usuário.");
@@ -130,6 +132,18 @@ export async function onRequestPost(context: PagesContext) {
             .bind(eventId)
             .first(),
         ),
+      isOlder: async () => {
+        await rateLimit(context.env, `webhook:${resourceId}`, 30, 300);
+        const stored = await context.env.DB.prepare(
+          "SELECT provider_updated_at FROM subscriptions WHERE firebase_uid=?",
+        )
+          .bind(subscription.external_reference!)
+          .first<{ provider_updated_at: string | null }>();
+        return isOlderProviderUpdate(
+          providerVersion,
+          stored?.provider_updated_at,
+        );
+      },
       persist: async () => {
         await persistSubscription(
           context.env,
@@ -137,7 +151,7 @@ export async function onRequestPost(context: PagesContext) {
           subscription,
         );
       },
-      record: async () => {
+      record: async (result) => {
         await context.env.DB.prepare(
           "INSERT OR IGNORE INTO webhook_events (event_id,type,resource_id,processed_at,result) VALUES (?,?,?,?,?)",
         )
@@ -146,7 +160,7 @@ export async function onRequestPost(context: PagesContext) {
             type,
             resourceId,
             new Date().toISOString(),
-            "processed",
+            result,
           )
           .run();
       },

@@ -1,5 +1,6 @@
 import { Card } from "@apps-simples/ui";
 import { version } from "../../../package.json";
+import { COMMERCIAL_PLAN_PRICE_LABEL } from "../../../shared/commercialPlan";
 export function InstitutionalContent() {
   return (
     <Card>
@@ -44,9 +45,9 @@ export function InstitutionalContent() {
       <details>
         <summary>Assinatura</summary>
         <p>
-          Plano mensal de R$ 1,99, com sete dias grátis quando elegível, cobrado
-          pelo Mercado Pago. O cancelamento interrompe futuras renovações
-          conforme o estado confirmado pelo provedor.
+          Plano mensal de {COMMERCIAL_PLAN_PRICE_LABEL}, com sete dias grátis
+          quando elegível, cobrado pelo Mercado Pago. O cancelamento interrompe
+          futuras renovações conforme o estado confirmado pelo provedor.
         </p>
       </details>
       <p>Gastos Simples v{version}</p>
