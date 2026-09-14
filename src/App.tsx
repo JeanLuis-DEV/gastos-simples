@@ -52,18 +52,16 @@ export default function App() {
       setAuthReady(true);
       return;
     }
-    let unsubscribe = () => {};
-    void initializeAuth((value) => {
-      setUser(value);
-      setAuthReady(true);
-    })
-      .then((fn) => {
-        unsubscribe = fn;
-      })
-      .catch((e) => {
-        setError((e as Error).message);
+    const unsubscribe = initializeAuth(
+      (value) => {
+        setUser(value);
         setAuthReady(true);
-      });
+      },
+      (message) => {
+        setError(message);
+        setAuthReady(true);
+      },
+    );
     return () => unsubscribe();
   }, [configError]);
   const refreshEntitlement = async () => {
@@ -103,10 +101,17 @@ export default function App() {
         busy={busy}
         error={error}
         onLogin={() => {
+          if (busy) return;
           setBusy(true);
           setError("");
           void loginWithGoogle()
-            .catch((e) => setError((e as Error).message))
+            .catch((e) =>
+              setError(
+                e instanceof Error
+                  ? e.message
+                  : "Não foi possível concluir o login. Tente novamente.",
+              ),
+            )
             .finally(() => setBusy(false));
         }}
       />

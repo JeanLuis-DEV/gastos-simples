@@ -21,6 +21,7 @@ Os nomes dos perfis integram o backup local. Os relatórios PDF são gerados e b
 - O cartão é tokenizado diretamente pelo Mercado Pago no Card Payment Brick. O aplicativo recebe apenas o token efêmero e o envia ao backend autenticado para criar a assinatura associada ao plano e ao UID Firebase.
 - O webhook público de Assinaturas é `/api/webhooks/mercado-pago` e sempre reconsulta a assinatura pela API autenticada antes de atualizar o entitlement.
 - O `APP_ORIGIN` de produção é `https://gastos.centralsimples.com.br`; o retorno do plano é `https://gastos.centralsimples.com.br/?assinatura=retorno` e o webhook oficial é `https://gastos.centralsimples.com.br/api/webhooks/mercado-pago`.
+- Em produção, `VITE_FIREBASE_AUTH_DOMAIN` é `gastos.centralsimples.com.br`. O Cloudflare Pages encaminha transparentemente `/__/auth/*` ao helper fixo do projeto Firebase para que o login por redirecionamento funcione sem armazenamento de terceiros; não há redirecionamento HTTP nem Firebase Hosting.
 - O host público legado `gastos-simples.pages.dev` redireciona permanentemente para o domínio oficial, preservando caminho e query; rotas `/api/*` e URLs de preview não são redirecionadas.
 
 Não há Firebase Hosting, Firestore, Storage, Admin SDK, PWA, service worker, manifest, Android ou Capacitor. O frontend não contém bypass de assinatura. O acesso administrativo não usa e-mail nem dados enviados pelo cliente: compara somente o UID do token Firebase já validado com `ADMIN_FIREBASE_UIDS` no backend.
