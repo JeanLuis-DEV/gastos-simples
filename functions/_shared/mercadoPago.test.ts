@@ -15,7 +15,7 @@ describe("assinatura Mercado Pago", () => {
     id: "plan",
     status: "active",
     reason: "Gastos Simples Premium",
-    back_url: "https://gastos-simples.pages.dev/?assinatura=retorno",
+    back_url: "https://gastos.centralsimples.com.br/?assinatura=retorno",
     application_id: 10,
     collector_id: 1,
     auto_recurring: {
@@ -29,7 +29,12 @@ describe("assinatura Mercado Pago", () => {
 
   it("aceita somente o plano comercial definitivo", () => {
     expect(() =>
-      assertPlanConfiguration(validPlan, { id: 1 }, "plan"),
+      assertPlanConfiguration(
+        validPlan,
+        { id: 1 },
+        "plan",
+        "https://gastos.centralsimples.com.br",
+      ),
     ).not.toThrow();
   });
 
@@ -52,6 +57,20 @@ describe("assinatura Mercado Pago", () => {
         },
         { id: 1 },
         "plan",
+        "https://gastos.centralsimples.com.br",
+      ),
+    ).toThrow(/configurado incorretamente/);
+  });
+  it("rejeita origem inválida e back_url de outro domínio", () => {
+    expect(() =>
+      assertPlanConfiguration(validPlan, { id: 1 }, "plan", "https://gastos.centralsimples.com.br/"),
+    ).toThrow(/origem oficial/);
+    expect(() =>
+      assertPlanConfiguration(
+        { ...validPlan, back_url: "https://gastos-simples.pages.dev/?assinatura=retorno" },
+        { id: 1 },
+        "plan",
+        "https://gastos.centralsimples.com.br",
       ),
     ).toThrow(/configurado incorretamente/);
   });
@@ -68,6 +87,44 @@ describe("assinatura Mercado Pago", () => {
           },
         },
         new Date("2028-01-03"),
+      ),
+    ).toBe("trial");
+  });
+  it("identifica o trial pelo primeiro vencimento quando a assinatura omite free_trial", () => {
+    expect(
+      normalizedStatus(
+        {
+          id: "p",
+          status: "authorized",
+          date_created: "2028-01-01T12:00:00Z",
+          next_payment_date: "2028-01-08T12:00:00Z",
+        },
+        new Date("2028-01-03T00:00:00Z"),
+      ),
+    ).toBe("trial");
+    expect(
+      normalizedStatus(
+        {
+          id: "p",
+          status: "authorized",
+          date_created: "2028-01-01T12:00:00Z",
+          next_payment_date: "2028-02-01T12:00:00Z",
+        },
+        new Date("2028-01-03T00:00:00Z"),
+      ),
+    ).toBe("active");
+  });
+  it("identifica o trial pelo first_invoice_offset retornado pelo provedor", () => {
+    expect(
+      normalizedStatus(
+        {
+          id: "p",
+          status: "authorized",
+          date_created: "2028-01-01T12:00:00Z",
+          first_invoice_offset: 7,
+          next_payment_date: "2028-01-01T12:00:00Z",
+        },
+        new Date("2028-01-03T00:00:00Z"),
       ),
     ).toBe("trial");
   });

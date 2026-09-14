@@ -35,7 +35,7 @@ function context(body: unknown): PagesContext {
       body: JSON.stringify(body),
     }),
     env: {
-      APP_ORIGIN: "https://gastos-simples.pages.dev",
+      APP_ORIGIN: "https://gastos.centralsimples.com.br",
       FIREBASE_PROJECT_ID: "project",
       MERCADO_PAGO_ACCESS_TOKEN: "token",
       MERCADO_PAGO_PLAN_ID: "plan",
@@ -64,7 +64,7 @@ describe("início seguro da assinatura", () => {
       email: "user@example.test",
     });
     vi.mocked(validateConfiguredPlan).mockResolvedValue({
-      plan: { id: "plan", status: "active", back_url: "https://gastos-simples.pages.dev/?assinatura=retorno" },
+      plan: { id: "plan", status: "active", back_url: "https://gastos.centralsimples.com.br/?assinatura=retorno" },
       account: { id: 123 },
     });
     vi.mocked(mpRequest).mockResolvedValue({
@@ -103,9 +103,9 @@ describe("início seguro da assinatura", () => {
       external_reference: "firebase-uid",
       payer_email: "user@example.test",
       card_token_id: validToken,
-      back_url: "https://gastos-simples.pages.dev/?assinatura=retorno",
+      back_url: "https://gastos.centralsimples.com.br/?assinatura=retorno",
       notification_url:
-        "https://gastos-simples.pages.dev/api/webhooks/mercado-pago",
+        "https://gastos.centralsimples.com.br/api/webhooks/mercado-pago",
       status: "authorized",
     });
     expect(sent).not.toHaveProperty("uid-atacante");
@@ -122,7 +122,7 @@ describe("início seguro da assinatura", () => {
     const sent = JSON.parse(String(init?.body));
     expect(sent).not.toHaveProperty("notification_url");
     expect(sent.back_url).toBe(
-      "https://gastos-simples.pages.dev/?assinatura=retorno",
+      "https://gastos.centralsimples.com.br/?assinatura=retorno",
     );
   });
 });

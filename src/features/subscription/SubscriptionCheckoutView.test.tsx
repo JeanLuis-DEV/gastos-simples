@@ -47,5 +47,9 @@ describe("checkout protegido do Mercado Pago", () => {
     expect(
       screen.getByText(/não vê nem armazena o número do cartão/),
     ).toBeTruthy();
+    expect(screen.getByText(/Cobrança hoje: R\$ 0,00/)).toBeTruthy();
+    expect(
+      screen.getByText(/Próxima cobrança: R\$ 4,99, somente após os 7 dias grátis/),
+    ).toBeTruthy();
   });
 });

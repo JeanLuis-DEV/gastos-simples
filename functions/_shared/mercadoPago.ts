@@ -10,6 +10,7 @@ export type MercadoSubscription = {
   external_reference?: string;
   init_point?: string;
   preapproval_plan_id?: string;
+  first_invoice_offset?: number;
   next_payment_date?: string;
   date_created?: string;
   last_modified?: string;
@@ -40,14 +41,24 @@ export function assertPlanConfiguration(
   plan: MercadoPlan,
   account: MercadoAccount,
   expectedPlanId: string,
+  appOrigin: string,
 ) {
   const recurring = plan.auto_recurring;
   const amount = Number(recurring?.transaction_amount);
+  let expectedBackUrl: string;
+  try {
+    const origin = new URL(appOrigin);
+    if (origin.protocol !== "https:" || origin.origin !== appOrigin)
+      throw new Error("invalid origin");
+    expectedBackUrl = new URL(COMMERCIAL_PLAN.backPath, origin).toString();
+  } catch {
+    throw new HttpError(503, "A origem oficial está configurada incorretamente.");
+  }
   if (
     plan.id !== expectedPlanId ||
     plan.status !== "active" ||
     plan.reason !== COMMERCIAL_PLAN.reason ||
-    plan.back_url !== `https://gastos-simples.pages.dev${COMMERCIAL_PLAN.backPath}` ||
+    plan.back_url !== expectedBackUrl ||
     !Number.isSafeInteger(account.id) ||
     plan.collector_id !== account.id ||
     !recurring ||
@@ -89,7 +100,7 @@ export async function mpRequest<T>(
 export const getSubscription = (env: Env, id: string) =>
   mpRequest<MercadoSubscription>(env, `/preapproval/${encodeURIComponent(id)}`);
 export async function validateConfiguredPlan(env: Env) {
-  assertEnv(env, ["MERCADO_PAGO_PLAN_ID"]);
+  assertEnv(env, ["MERCADO_PAGO_PLAN_ID", "APP_ORIGIN"]);
   const [plan, account] = await Promise.all([
     mpRequest<MercadoPlan>(
       env,
@@ -97,12 +108,41 @@ export async function validateConfiguredPlan(env: Env) {
     ),
     mpRequest<MercadoAccount>(env, "/users/me"),
   ]);
-  assertPlanConfiguration(plan, account, env.MERCADO_PAGO_PLAN_ID);
+  assertPlanConfiguration(
+    plan,
+    account,
+    env.MERCADO_PAGO_PLAN_ID,
+    env.APP_ORIGIN,
+  );
   return { plan, account };
 }
 function trialEnd(subscription: MercadoSubscription) {
   const trial = subscription.auto_recurring?.free_trial;
-  if (!trial || !subscription.date_created) return undefined;
+  if (!subscription.date_created) return undefined;
+  if (
+    subscription.first_invoice_offset === COMMERCIAL_PLAN.trialFrequency &&
+    COMMERCIAL_PLAN.trialFrequencyType === "days"
+  ) {
+    const createdAt = Date.parse(subscription.date_created);
+    if (Number.isFinite(createdAt))
+      return new Date(
+        createdAt + subscription.first_invoice_offset * 24 * 60 * 60 * 1000,
+      ).toISOString();
+  }
+  if (!trial && subscription.next_payment_date) {
+    const createdAt = Date.parse(subscription.date_created);
+    const nextPaymentAt = Date.parse(subscription.next_payment_date);
+    const expectedTrialEnd =
+      createdAt + COMMERCIAL_PLAN.trialFrequency * 24 * 60 * 60 * 1000;
+    if (
+      Number.isFinite(createdAt) &&
+      Number.isFinite(nextPaymentAt) &&
+      Math.abs(nextPaymentAt - expectedTrialEnd) <= 5 * 60 * 1000
+    )
+      return new Date(nextPaymentAt).toISOString();
+    return undefined;
+  }
+  if (!trial) return undefined;
   const date = new Date(subscription.date_created);
   if (trial.frequency_type === "days")
     date.setUTCDate(date.getUTCDate() + trial.frequency);

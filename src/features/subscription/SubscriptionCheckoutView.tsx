@@ -4,7 +4,10 @@ import {
 } from "@mercadopago/sdk-react";
 import { Alert, Button, Card } from "@apps-simples/ui";
 import { useState } from "react";
-import { COMMERCIAL_PLAN } from "../../../shared/commercialPlan";
+import {
+  COMMERCIAL_PLAN,
+  COMMERCIAL_PLAN_PRICE_LABEL,
+} from "../../../shared/commercialPlan";
 
 export function SubscriptionCheckoutView({
   email,
@@ -32,6 +35,10 @@ export function SubscriptionCheckoutView({
       <section className="hero subscription-checkout">
         <p className="eyebrow">Pagamento seguro</p>
         <h1>Ative seus 7 dias grátis</h1>
+        <p>
+          Cobrança hoje: R$ 0,00. Próxima cobrança: {COMMERCIAL_PLAN_PRICE_LABEL},
+          somente após os 7 dias grátis. Depois, {COMMERCIAL_PLAN_PRICE_LABEL} por mês.
+        </p>
         <p>
           Seus dados do cartão são enviados com segurança diretamente ao Mercado
           Pago. O Gastos Simples não vê nem armazena o número do cartão ou o

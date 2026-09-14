@@ -28,7 +28,7 @@ describe("configuração pública do checkout", () => {
     const context = {
       request: new Request("https://app.test/api/subscription/config"),
       env: {
-        APP_ORIGIN: "https://gastos-simples.pages.dev",
+        APP_ORIGIN: "https://gastos.centralsimples.com.br",
         FIREBASE_PROJECT_ID: "project",
         MERCADO_PAGO_ACCESS_TOKEN: "token",
         MERCADO_PAGO_PLAN_ID: "plan",
