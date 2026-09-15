@@ -80,7 +80,7 @@ export const onOptions = ({ request, env }: { request: Request; env: Env }) => {
       "Access-Control-Allow-Headers",
       "Authorization, Content-Type, X-Idempotency-Key, X-Request-Id, X-Signature",
     );
-    response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    response.headers.set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
     return response;
   } catch {
     return safeError(env, request, "Origem não autorizada.", 403);

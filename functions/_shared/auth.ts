@@ -84,6 +84,7 @@ export async function authenticate(
     uid: payload.sub!,
     email: payload.email!.trim().toLowerCase(),
     name: payload.name,
+    authTime: payload.auth_time,
   };
 }
 
