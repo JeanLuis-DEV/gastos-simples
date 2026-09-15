@@ -512,6 +512,13 @@
 .calculator-history {
   min-width: 0;
 }
+.calculator-history-heading {
+  flex-wrap: wrap;
+}
+.calculator-history-heading .as-button {
+  flex: 0 1 auto;
+  min-width: 0;
+}
 .calculator-card {
   display: grid;
   gap: var(--as-space-3);

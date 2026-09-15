@@ -1,8 +1,9 @@
 import { Button, Card } from "@apps-simples/ui";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { calculate } from "../../domain/calculator";
 import { parseMoneyToCents } from "../../domain/money";
 import { calculatorRepository } from "../../storage/database";
+import { ConfirmModal } from "./ConfirmModal";
 import type { TransactionPrefill } from "./TransactionForm";
 import type { FeedbackProps } from "./types";
 
@@ -30,9 +31,13 @@ export function CalculatorView({
 >) {
   const [expression, setExpression] = useState(""),
     [result, setResult] = useState(""),
+    [clearConfirmationOpen, setClearConfirmationOpen] = useState(false),
+    [clearingHistory, setClearingHistory] = useState(false),
     [history, setHistory] = useState<
       Array<{ id: string; expression: string; result: string }>
     >([]);
+  const clearingHistoryRef = useRef(false);
+  const historyTitleRef = useRef<HTMLHeadingElement>(null);
   const displayedResult = result ? formatCalculatorResult(result) : "0";
   let usableAmountCents: number | undefined;
   try {
@@ -102,6 +107,23 @@ export function CalculatorView({
       amountCents: usableAmountCents,
       notes: expression ? `Resultado de ${expression}` : undefined,
     });
+  };
+  const clearHistory = async () => {
+    if (clearingHistoryRef.current) return;
+    clearingHistoryRef.current = true;
+    setClearingHistory(true);
+    try {
+      await calculatorRepository.clear(ownerUid);
+      setHistory([]);
+      setClearConfirmationOpen(false);
+      onMessage("Histórico da calculadora limpo.");
+      requestAnimationFrame(() => historyTitleRef.current?.focus());
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      clearingHistoryRef.current = false;
+      setClearingHistory(false);
+    }
   };
   const appendKey = (key: string) => {
     if (result) {
@@ -238,7 +260,20 @@ export function CalculatorView({
           )}
         </Card>
         <Card className="calculator-history">
-          <h2>Histórico</h2>
+          <div className="card-heading calculator-history-heading">
+            <h2 ref={historyTitleRef} tabIndex={-1}>
+              Histórico
+            </h2>
+            {history.length > 0 && (
+              <Button
+                size="compact"
+                variant="danger"
+                onClick={() => setClearConfirmationOpen(true)}
+              >
+                Limpar histórico
+              </Button>
+            )}
+          </div>
           {history.length ? (
             <ul className="history-list">
               {history.map((h) => (
@@ -260,6 +295,20 @@ export function CalculatorView({
           )}
         </Card>
       </div>
+      <ConfirmModal
+        open={clearConfirmationOpen}
+        title="Limpar histórico?"
+        confirmLabel="Limpar histórico"
+        danger
+        busy={clearingHistory}
+        onClose={() => setClearConfirmationOpen(false)}
+        onConfirm={() => void clearHistory()}
+      >
+        <p>
+          Todos os cálculos salvos neste dispositivo serão excluídos. Esta ação
+          não pode ser desfeita.
+        </p>
+      </ConfirmModal>
     </section>
   );
 }

@@ -560,6 +560,230 @@ describe("fluxos acessíveis da interface", () => {
     });
   });
 
+  it("não exibe a ação de limpar quando o histórico está vazio", async () => {
+    render(
+      <CalculatorView
+        ownerUid="empty-calculator-history-user"
+        onError={vi.fn()}
+        onMessage={vi.fn()}
+        onUseValue={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Nenhum cálculo ainda.")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Limpar histórico" }),
+    ).toBeNull();
+  });
+
+  it("abre e cancela a confirmação sem excluir o histórico", async () => {
+    const ownerUid = "cancel-clear-history-user";
+    await calculatorRepository.put({
+      id: "cancel-clear-history-entry",
+      ownerUid,
+      expression: "2 + 2",
+      result: "4",
+      createdAt: "2028-01-01T00:00:00.000Z",
+    });
+    render(
+      <CalculatorView
+        ownerUid={ownerUid}
+        onError={vi.fn()}
+        onMessage={vi.fn()}
+        onUseValue={vi.fn()}
+      />,
+    );
+
+    const trigger = await screen.findByRole("button", {
+      name: "Limpar histórico",
+    });
+    trigger.focus();
+    fireEvent.click(trigger);
+    const dialog = screen.getByRole("dialog");
+    expect(
+      within(dialog).getByRole("heading", { name: "Limpar histórico?" }),
+    ).toBeTruthy();
+    expect(
+      within(dialog).getByText(
+        "Todos os cálculos salvos neste dispositivo serão excluídos. Esta ação não pode ser desfeita.",
+      ),
+    ).toBeTruthy();
+    expect(
+      within(dialog).getByRole("button", { name: "Limpar histórico" }),
+    ).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancelar" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await calculatorRepository.list(ownerUid)).toHaveLength(1);
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("exclui todo o histórico do ownerUid, preserva outra conta e o cálculo atual", async () => {
+    const ownerUid = "clear-all-history-user";
+    const otherOwnerUid = "preserved-history-user";
+    await calculatorRepository.putMany(
+      Array.from({ length: 25 }, (_, index) => ({
+        id: `clear-history-${index}`,
+        ownerUid,
+        expression: `${index} + ${index}`,
+        result: String(index * 2),
+        createdAt: `2028-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
+      })),
+    );
+    await calculatorRepository.put({
+      id: "preserved-other-owner-history",
+      ownerUid: otherOwnerUid,
+      expression: "9 + 9",
+      result: "18",
+      createdAt: "2028-01-01T00:00:00.000Z",
+    });
+    const onMessage = vi.fn();
+    render(
+      <CalculatorView
+        ownerUid={ownerUid}
+        onError={vi.fn()}
+        onMessage={onMessage}
+        onUseValue={vi.fn()}
+      />,
+    );
+
+    const clearButton = await screen.findByRole("button", {
+      name: "Limpar histórico",
+    });
+    const visibleEntries = document.querySelectorAll(".history-list li");
+    expect(visibleEntries).toHaveLength(20);
+    fireEvent.click(visibleEntries[0]!.querySelector("button")!);
+    expect(
+      (screen.getByRole("textbox", {
+        name: "Expressão",
+      }) as HTMLInputElement).value,
+    ).toBe("24 + 24");
+    expect(screen.getByLabelText("Resultado: 48")).toBeTruthy();
+
+    fireEvent.click(clearButton);
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Limpar histórico",
+      }),
+    );
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await calculatorRepository.list(ownerUid)).toEqual([]);
+    expect(await calculatorRepository.list(otherOwnerUid)).toHaveLength(1);
+    expect(screen.getByText("Nenhum cálculo ainda.")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Limpar histórico" }),
+    ).toBeNull();
+    expect(
+      (screen.getByRole("textbox", {
+        name: "Expressão",
+      }) as HTMLInputElement).value,
+    ).toBe("24 + 24");
+    expect(screen.getByLabelText("Resultado: 48")).toBeTruthy();
+    expect(onMessage).toHaveBeenCalledWith("Histórico da calculadora limpo.");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("heading", { name: "Histórico" }),
+      ),
+    );
+  });
+
+  it("mantém a confirmação aberta e libera as ações quando a exclusão falha", async () => {
+    const ownerUid = "clear-history-error-user";
+    await calculatorRepository.put({
+      id: "clear-history-error-entry",
+      ownerUid,
+      expression: "3 + 3",
+      result: "6",
+      createdAt: "2028-01-01T00:00:00.000Z",
+    });
+    const onError = vi.fn();
+    vi.spyOn(calculatorRepository, "clear").mockRejectedValueOnce(
+      new Error("Falha ao limpar o histórico."),
+    );
+    render(
+      <CalculatorView
+        ownerUid={ownerUid}
+        onError={onError}
+        onMessage={vi.fn()}
+        onUseValue={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Limpar histórico" }),
+    );
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Limpar histórico",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(onError).toHaveBeenCalledWith("Falha ao limpar o histórico."),
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(
+      within(dialog)
+        .getByRole("button", { name: "Limpar histórico" })
+        .hasAttribute("disabled"),
+    ).toBe(false);
+    expect(
+      within(dialog)
+        .getByRole("button", { name: "Cancelar" })
+        .hasAttribute("disabled"),
+    ).toBe(false);
+    expect(await calculatorRepository.list(ownerUid)).toHaveLength(1);
+  });
+
+  it("bloqueia ações e cliques repetidos enquanto limpa o histórico", async () => {
+    const ownerUid = "clear-history-loading-user";
+    await calculatorRepository.put({
+      id: "clear-history-loading-entry",
+      ownerUid,
+      expression: "4 + 4",
+      result: "8",
+      createdAt: "2028-01-01T00:00:00.000Z",
+    });
+    let resolveClear!: () => void;
+    const pendingClear = new Promise<void>((resolve) => {
+      resolveClear = resolve;
+    });
+    const clear = vi
+      .spyOn(calculatorRepository, "clear")
+      .mockReturnValueOnce(pendingClear);
+    render(
+      <CalculatorView
+        ownerUid={ownerUid}
+        onError={vi.fn()}
+        onMessage={vi.fn()}
+        onUseValue={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Limpar histórico" }),
+    );
+    const dialog = screen.getByRole("dialog");
+    const confirm = within(dialog).getByRole("button", { name: "Limpar histórico" });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+
+    expect(
+      within(dialog)
+        .getByRole("button", { name: "Processando…" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    expect(
+      within(dialog)
+        .getByRole("button", { name: "Cancelar" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    expect(clear).toHaveBeenCalledTimes(1);
+    resolveClear();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
   it("usa resultado brasileiro vindo do histórico e invalida resultado antigo ao editar", async () => {
     const onUseValue = vi.fn();
     await calculatorRepository.put({
