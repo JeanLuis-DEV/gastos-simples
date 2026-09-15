@@ -14,6 +14,8 @@ import {
   getSelectedProfile,
   getTheme,
   profilesRepository,
+  putTransactionsAtomic,
+  seriesSegmentsRepository,
   setSelectedProfile,
   transactionsRepository,
 } from "../../storage/database";
@@ -60,7 +62,7 @@ export function DashboardApp({
   const refresh = async () => {
     await ensureDefaultCategories(user.uid);
     await ensureFinancialProfiles(user.uid);
-    const all = await transactionsRepository.list(user.uid);
+    const all = await transactionsRepository.list(user.uid, true);
     const nextProfiles = await profilesRepository.list(user.uid);
     setAllTransactions(all);
     setTransactions(all.filter((i) => !i.isDeleted));
@@ -82,7 +84,7 @@ export function DashboardApp({
   }, [user.uid]);
   useEffect(() => {
     void transactionsRepository
-      .list(user.uid)
+      .list(user.uid, true)
       .then(async (all) => {
         const ids = [
           ...new Set(
@@ -91,16 +93,19 @@ export function DashboardApp({
               .map((i) => i.seriesId!),
           ),
         ];
+        const segments = await seriesSegmentsRepository.list(user.uid);
         const additions = ids
           .map((id) =>
             recurringOccurrenceForMonth(
               all.filter((i) => i.seriesId === id),
               month,
+              undefined,
+              segments.filter((segment) => segment.seriesId === id),
             ),
           )
           .filter((i): i is Transaction => Boolean(i));
         if (additions.length) {
-          await transactionsRepository.putMany(additions);
+          await putTransactionsAtomic(additions);
           await refresh();
         }
       })

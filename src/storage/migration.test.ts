@@ -6,7 +6,7 @@ const requestValue = <T>(request: IDBRequest<T>) => new Promise<T>((resolve, rej
   request.onerror = () => reject(request.error);
 });
 
-describe("migração IndexedDB v1 para v2", () => {
+describe("migração IndexedDB v1 para v3", () => {
   it("cria Principal por proprietário e associa ativos e excluídos atomicamente", async () => {
     vi.stubGlobal("indexedDB", new IDBFactory());
     const open = indexedDB.open("gastos-simples", 1);
@@ -25,7 +25,7 @@ describe("migração IndexedDB v1 para v2", () => {
     const tx = oldDb.transaction(["transactions", "categories"], "readwrite");
     const base = { occurrenceKey: "single:1", description: "Legado", amountCents: 100, type: "expense", status: "pending", dueDate: "2028-01-01", categoryId: "c", categoryName: "Casa", notes: "", kind: "single", createdAt: "2028-01-01T00:00:00Z", updatedAt: "2028-01-01T00:00:00Z" };
     tx.objectStore("transactions").put({ ...base, id: "active", ownerUid: "u1" });
-    tx.objectStore("transactions").put({ ...base, id: "deleted", ownerUid: "u1", occurrenceKey: "single:2", isDeleted: true });
+    tx.objectStore("transactions").put({ ...base, id: "deleted", ownerUid: "u1", isDeleted: true });
     tx.objectStore("transactions").put({ ...base, id: "other", ownerUid: "u2", occurrenceKey: "single:3" });
     tx.objectStore("categories").put({ id: "c", ownerUid: "u1", name: "Casa", type: "expense", isDefault: false });
     await new Promise<void>((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); });
@@ -35,10 +35,14 @@ describe("migração IndexedDB v1 para v2", () => {
     const { profilesRepository, transactionsRepository } = await import("./database");
     expect((await profilesRepository.list("u1")).map((profile) => profile.name)).toEqual(["Principal"]);
     expect(await profilesRepository.list("u2")).toHaveLength(1);
-    const migrated = await transactionsRepository.list("u1");
+    const migrated = await transactionsRepository.list("u1", true);
     expect(migrated).toHaveLength(2);
     expect(migrated.every((item) => item.profileId === "profile:principal:u1")).toBe(true);
     expect(migrated.some((item) => item.isDeleted)).toBe(true);
+    expect(migrated.map((item) => item.occurrenceKey).sort()).toEqual([
+      "single:active",
+      "single:deleted",
+    ]);
     vi.unstubAllGlobals();
   });
 });

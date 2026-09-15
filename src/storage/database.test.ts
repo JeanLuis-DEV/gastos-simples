@@ -2,17 +2,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   categoriesRepository,
   addFinancialProfile,
-  clearUserData,
+  clearUserDataForTesting,
   deleteFinancialProfile,
   ensureDefaultCategories,
   ensureFinancialProfiles,
   exportBackup,
   importBackup,
+  putTransactionsAtomic,
   deleteCategory,
   transactionsRepository,
   profilesRepository,
   resetUserData,
+  seriesSegmentsRepository,
   calculatorRepository,
+  calculatorEntriesForSync,
   getSelectedProfile,
   setSelectedProfile,
   renameFinancialProfile,
@@ -38,8 +41,8 @@ const item = (id: string, ownerUid: string): Transaction => ({
   updatedAt: "2028-01-01T00:00:00Z",
 });
 beforeEach(async () => {
-  await clearUserData("u1");
-  await clearUserData("u2");
+  await clearUserDataForTesting("u1");
+  await clearUserDataForTesting("u2");
   await categoriesRepository.put({
     id: "c",
     ownerUid: "u1",
@@ -52,8 +55,12 @@ describe("IndexedDB por usuário", () => {
   it("isola dados pelo Firebase UID", async () => {
     await transactionsRepository.put(item("1", "u1"));
     await transactionsRepository.put(item("2", "u2"));
-    expect(await transactionsRepository.list("u1")).toEqual([item("1", "u1")]);
-    expect(await transactionsRepository.list("u2")).toEqual([item("2", "u2")]);
+    expect(await transactionsRepository.list("u1")).toEqual([
+      expect.objectContaining(item("1", "u1")),
+    ]);
+    expect(await transactionsRepository.list("u2")).toEqual([
+      expect.objectContaining(item("2", "u2")),
+    ]);
   });
   it("não permite exclusão por outro usuário", async () => {
     await transactionsRepository.put(item("1", "u1"));
@@ -105,8 +112,8 @@ describe("backup atômico e versionado", () => {
   it("exporta e importa backup válido", async () => {
     await transactionsRepository.put(item("1", "u1"));
     const backup = await exportBackup("u1");
-    expect(backup.schemaVersion).toBe(3);
-    await clearUserData("u1");
+    expect(backup.schemaVersion).toBe(4);
+    await clearUserDataForTesting("u1");
     await importBackup("u1", validateBackup(backup, "u1"), "replace");
     expect(await transactionsRepository.list("u1")).toHaveLength(1);
   });
@@ -133,7 +140,19 @@ describe("backup atômico e versionado", () => {
         "u1",
       ),
     ).toThrow(/dados inválidos/);
-    expect(await transactionsRepository.list("u1")).toEqual([item("1", "u1")]);
+    expect(await transactionsRepository.list("u1")).toEqual([
+      expect.objectContaining(item("1", "u1")),
+    ]);
+  });
+  it("rejeita importação cujo ID pertença a outra conta sem sobrescrever dados", async () => {
+    await transactionsRepository.put(item("shared-import-id", "u2"));
+    const backup = await exportBackup("u1");
+    const principal = backup.profiles[0]!;
+    const incoming = { ...item("shared-import-id", "u1"), profileId: principal.id };
+    await expect(importBackup("u1", validateBackup({ ...backup, transactions: [incoming] }, "u1"), "merge"))
+      .rejects.toThrow(/cancelada sem alterar/);
+    expect(await transactionsRepository.list("u1")).toEqual([]);
+    expect(await transactionsRepository.list("u2")).toEqual([expect.objectContaining(item("shared-import-id", "u2"))]);
   });
   it("aceita tema legado e o normaliza para escuro", async () => {
     const backup = await exportBackup("u1");
@@ -157,6 +176,35 @@ describe("backup atômico e versionado", () => {
     expect(normalized.preferences.confirmBeforeDelete).toBe(true);
     await importBackup("u1", normalized, "replace");
     expect((await exportBackup("u1")).preferences.confirmBeforeDelete).toBe(true);
+  });
+  it("exige séries e segmentos no schema 4 e deriva ambos no schema 3", async () => {
+    const recurring = {
+      ...item("recurring", "u1"),
+      kind: "recurring" as const,
+      seriesId: "series-backup",
+      occurrenceKey: "series-backup:2028-01",
+    };
+    await putTransactionsAtomic([recurring]);
+    const current = await exportBackup("u1");
+    const { series: _series, seriesSegments: _segments, ...withoutSeries } = current;
+    expect(() => validateBackup(withoutSeries, "u1")).toThrow(/inválido/);
+    const legacy = validateBackup({ ...withoutSeries, schemaVersion: 3 }, "u1");
+    expect(legacy.series).toEqual([expect.objectContaining({ id: "series-backup", kind: "recurring" })]);
+    expect(legacy.seriesSegments).toEqual([expect.objectContaining({ seriesId: "series-backup" })]);
+  });
+  it("preserva todo o histórico no backup e seleciona somente os 100 mais recentes para sincronização", async () => {
+    await calculatorRepository.putMany(Array.from({ length: 105 }, (_, index) => ({
+      id: `calc-${index}`,
+      ownerUid: "u1",
+      expression: `${index} + 1`,
+      result: String(index + 1),
+      createdAt: new Date(Date.UTC(2028, 0, 1, 0, 0, index)).toISOString(),
+    })));
+    expect((await exportBackup("u1")).calculator).toHaveLength(105);
+    const selected = await calculatorEntriesForSync("u1");
+    expect(selected).toHaveLength(100);
+    expect(selected.some(({ id }) => id === "calc-0")).toBe(false);
+    expect(await calculatorRepository.list("u1")).toHaveLength(105);
   });
 });
 
@@ -186,6 +234,21 @@ describe("perfis financeiros locais", () => {
     expect((await transactionsRepository.list("u1")).every((value) => value.profileId === principal!.id)).toBe(true);
     expect(await profilesRepository.list("u1")).toHaveLength(1);
   });
+  it("transfere também o segmento que gerará ocorrências futuras", async () => {
+    const [principal] = await ensureFinancialProfiles("u1");
+    const secondary = await addFinancialProfile("u1", "Casa");
+    await putTransactionsAtomic([{
+      ...item("profile-series", "u1"),
+      profileId: secondary.id,
+      kind: "recurring",
+      seriesId: "profile-series-id",
+      occurrenceKey: "profile-series-id:2028-01",
+    }]);
+    await deleteFinancialProfile("u1", secondary.id, principal!.id);
+    expect(await seriesSegmentsRepository.list("u1")).toEqual([
+      expect.objectContaining({ seriesId: "profile-series-id", profileId: principal!.id }),
+    ]);
+  });
   it("impede excluir o único perfil", async () => {
     const [principal] = await ensureFinancialProfiles("u1");
     await expect(deleteFinancialProfile("u1", principal!.id)).rejects.toThrow(/único perfil/);
@@ -201,7 +264,7 @@ describe("perfis financeiros locais", () => {
       preferences: { theme: "light", confirmBeforeDelete: true },
     };
     const normalized = validateBackup(legacy, "u1");
-    expect(normalized.schemaVersion).toBe(3);
+    expect(normalized.schemaVersion).toBe(4);
     expect(normalized.profiles[0]?.name).toBe("Principal");
     expect(normalized.transactions.every((transaction) => transaction.profileId === normalized.profiles[0]?.id)).toBe(true);
   });

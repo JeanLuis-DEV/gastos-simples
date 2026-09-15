@@ -21,7 +21,7 @@ import {
   updateSeriesItems,
   type SeriesScope,
 } from "../../domain/transactions";
-import { transactionsRepository } from "../../storage/database";
+import { putTransactionsAtomic } from "../../storage/database";
 import { CategoryPicker } from "./CategoryPicker";
 import { ProfileSelect } from "./ProfileSelect";
 import { AccessibleSelect } from "./AccessibleSelect";
@@ -166,7 +166,7 @@ export function TransactionForm({
           notes: notes.trim(),
         };
         if (kindChanged)
-          await transactionsRepository.putMany(
+          await putTransactionsAtomic(
             restructureTransactionSeries(allItems, item, {
               ownerUid,
               ...changes,
@@ -178,12 +178,13 @@ export function TransactionForm({
           const selected = selectSeriesItems(allItems, item, scope);
           const updated = updateSeriesItems(allItems, item, scope, changes);
           const selectedIds = new Set(selected.map((value) => value.id));
-          await transactionsRepository.putMany(
+          await putTransactionsAtomic(
             updated.filter((value) => selectedIds.has(value.id)),
+            scope === "future" ? { segmentFrom: item.dueDate } : undefined,
           );
         }
       } else
-        await transactionsRepository.putMany(
+        await putTransactionsAtomic(
           createTransactions({
             ownerUid,
             profileId,

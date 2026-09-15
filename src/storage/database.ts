@@ -1,12 +1,82 @@
 import { isValidCivilDate } from "../domain/dates";
-import type { CalculatorEntry, Category, FinancialProfile, ThemePreference, Transaction, TransactionKind, TransactionStatus, TransactionType } from "../domain/models";
+import type { CalculatorEntry, Category, FinancialProfile, ThemePreference, Transaction, TransactionKind, TransactionSeries, TransactionSeriesSegment, TransactionStatus, TransactionType } from "../domain/models";
 import { DEFAULT_CATEGORIES } from "../domain/models";
+import type { OutboxEntry, SyncBaseSnapshot, SyncConflict, SyncEntityType, SyncPayload, SyncState } from "../sync/types";
 
 const DB_NAME = "gastos-simples";
-const DB_VERSION = 2;
-type StoreName = "transactions" | "categories" | "calculator" | "preferences" | "profiles";
+const DB_VERSION = 3;
+type StoreName = "transactions" | "categories" | "calculator" | "preferences" | "profiles" | "series" | "seriesSegments";
+const SYNC_STORES = ["syncOutbox", "syncState", "syncBaseSnapshots", "syncConflicts"] as const;
 const principalId = (uid: string) => `profile:principal:${uid}`;
 const nameKey = (name: string) => name.trim().toLocaleLowerCase("pt-BR");
+export const categoryCanonicalKey = (category: Pick<Category, "name" | "type">) =>
+  `${category.type}:${nameKey(category.name).normalize("NFD").replace(/[\u0300-\u036f]/g, "")}`;
+
+const entityByStore: Partial<Record<StoreName, SyncEntityType>> = {
+  transactions: "transaction",
+  categories: "category",
+  calculator: "calculator",
+  profiles: "profile",
+  series: "series",
+  seriesSegments: "seriesSegment",
+};
+
+function syncRecord<T extends { id: string; ownerUid: string; localVersion?: number; serverVersion?: number }>(item: T, previous?: T): T {
+  return {
+    ...item,
+    localVersion: Math.max(previous?.localVersion ?? 0, item.localVersion ?? 0) + 1,
+    serverVersion: item.serverVersion ?? previous?.serverVersion ?? 0,
+  };
+}
+
+function outboxId(ownerUid: string, mutationId: string, entityType: SyncEntityType, recordId: string) {
+  return `${ownerUid}:${mutationId}:${entityType}:${recordId}`;
+}
+
+function syncFingerprint(entityType: SyncEntityType, operation: "upsert" | "delete", payload: SyncPayload) {
+  const { localVersion: _localVersion, serverVersion: _serverVersion, serverRevision: _serverRevision, deletedAt: _deletedAt, ...domain } = payload;
+  return JSON.stringify({ entityType, recordId: payload.id, operation, payload: domain });
+}
+
+function enqueueChange(
+  tx: IDBTransaction,
+  entityType: SyncEntityType,
+  next: SyncPayload,
+  previous: SyncPayload | undefined,
+  operation: "upsert" | "delete",
+  mutationId: string,
+) {
+  const fingerprint = syncFingerprint(entityType, operation, next);
+  const id = outboxId(next.ownerUid, mutationId, entityType, next.id);
+  const store = tx.objectStore("syncOutbox");
+  const request = store.get(id);
+  request.onsuccess = () => {
+    const existing = request.result as OutboxEntry | undefined;
+    if (existing && existing.fingerprint !== fingerprint) {
+      tx.abort();
+      return;
+    }
+    if (!existing) {
+      try {
+        store.put({
+          id,
+          ownerUid: next.ownerUid,
+          mutationId,
+          entityType,
+          recordId: next.id,
+          operation,
+          baseVersion: previous?.serverVersion ?? 0,
+          payload: next,
+          baseSnapshot: previous,
+          fingerprint,
+          createdAt: new Date().toISOString(),
+        } satisfies OutboxEntry);
+      } catch {
+        tx.abort();
+      }
+    }
+  };
+}
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -19,6 +89,9 @@ function openDatabase(): Promise<IDBDatabase> {
         store.createIndex("ownerUid", "ownerUid");
         store.createIndex("ownerMonth", ["ownerUid", "dueDate"]);
       }
+      const transactionIndexes = upgrade.objectStore("transactions");
+      if (!transactionIndexes.indexNames.contains("ownerOccurrence"))
+        transactionIndexes.createIndex("ownerOccurrence", ["ownerUid", "occurrenceKey"]);
       if (!db.objectStoreNames.contains("categories")) {
         const store = db.createObjectStore("categories", { keyPath: "id" });
         store.createIndex("ownerUid", "ownerUid");
@@ -32,6 +105,25 @@ function openDatabase(): Promise<IDBDatabase> {
         ? upgrade.objectStore("profiles")
         : db.createObjectStore("profiles", { keyPath: "id" });
       if (!profiles.indexNames.contains("ownerUid")) profiles.createIndex("ownerUid", "ownerUid");
+      for (const storeName of ["series", "seriesSegments"] as const) {
+        if (!db.objectStoreNames.contains(storeName)) {
+          const store = db.createObjectStore(storeName, { keyPath: "id" });
+          store.createIndex("ownerUid", "ownerUid");
+          if (storeName === "seriesSegments") store.createIndex("ownerSeries", ["ownerUid", "seriesId"]);
+        }
+      }
+      if (!db.objectStoreNames.contains("syncOutbox")) {
+        const store = db.createObjectStore("syncOutbox", { keyPath: "id" });
+        store.createIndex("ownerUid", "ownerUid");
+        store.createIndex("ownerCreated", ["ownerUid", "createdAt"]);
+      }
+      if (!db.objectStoreNames.contains("syncState")) db.createObjectStore("syncState", { keyPath: "ownerUid" });
+      for (const storeName of ["syncBaseSnapshots", "syncConflicts"] as const) {
+        if (!db.objectStoreNames.contains(storeName)) {
+          const store = db.createObjectStore(storeName, { keyPath: "id" });
+          store.createIndex("ownerUid", "ownerUid");
+        }
+      }
       if ((event.oldVersion ?? 0) < 2) {
         const timestamp = new Date().toISOString();
         const ensure = (uid: string) => {
@@ -57,6 +149,81 @@ function openDatabase(): Promise<IDBDatabase> {
           cursor.continue();
         };
       }
+      if ((event.oldVersion ?? 0) < 3) {
+        const normalizeStore = (storeName: "transactions" | "categories" | "calculator" | "profiles") => {
+          const request = upgrade.objectStore(storeName).openCursor();
+          request.onsuccess = () => {
+            const cursor = request.result;
+            if (!cursor) return;
+            const value = cursor.value as SyncPayload;
+            const common = { ...value, localVersion: Math.max(value.localVersion ?? 0, 1), serverVersion: value.serverVersion ?? 0 };
+            if (storeName === "transactions") {
+              const item = common as Transaction;
+              const occurrenceKey = item.kind === "single"
+                ? `single:${item.id}`
+                : item.kind === "recurring" && item.seriesId
+                  ? `${item.seriesId}:${item.dueDate.slice(0, 7)}`
+                  : item.seriesId && item.installmentCurrent
+                    ? `${item.seriesId}:${item.installmentCurrent}`
+                    : item.occurrenceKey;
+              cursor.update({ ...item, profileId: item.profileId || principalId(item.ownerUid), occurrenceKey });
+            } else if (storeName === "categories") {
+              const item = common as Category;
+              cursor.update({ ...item, canonicalKey: categoryCanonicalKey(item) });
+            } else cursor.update(common);
+            cursor.continue();
+          };
+        };
+        (["transactions", "categories", "calculator", "profiles"] as const).forEach(normalizeStore);
+        const allTransactions = upgrade.objectStore("transactions").getAll();
+        allTransactions.onsuccess = () => {
+          const timestamp = new Date().toISOString();
+          const groups = new Map<string, Transaction[]>();
+          for (const item of allTransactions.result as Transaction[]) {
+            if (!item.seriesId || item.kind === "single") continue;
+            const group = groups.get(item.seriesId) ?? [];
+            group.push(item);
+            groups.set(item.seriesId, group);
+          }
+          for (const [seriesId, items] of groups) {
+            items.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+            const first = items[0]!;
+            const updatedAt = items.map((item) => item.updatedAt).sort().at(-1) ?? timestamp;
+            upgrade.objectStore("series").put({
+              id: seriesId,
+              ownerUid: first.ownerUid,
+              kind: first.kind as "recurring" | "installment",
+              startDate: first.dueDate,
+              endBefore: items.map((item) => item.seriesEndDate).filter(Boolean).sort()[0],
+              installmentTotal: first.installmentTotal,
+              createdAt: first.createdAt,
+              updatedAt,
+              localVersion: 1,
+              serverVersion: 0,
+              isDeleted: false,
+            } satisfies TransactionSeries);
+            upgrade.objectStore("seriesSegments").put({
+              id: `segment:${seriesId}:${first.dueDate}`,
+              ownerUid: first.ownerUid,
+              seriesId,
+              effectiveFrom: first.dueDate,
+              anchorDueDate: first.dueDate,
+              profileId: first.profileId || principalId(first.ownerUid),
+              description: first.description,
+              amountCents: first.amountCents,
+              type: first.type,
+              categoryId: first.categoryId,
+              categoryName: first.categoryName,
+              notes: first.notes,
+              createdAt: first.createdAt,
+              updatedAt,
+              localVersion: 1,
+              serverVersion: 0,
+              isDeleted: false,
+            } satisfies TransactionSeriesSegment);
+          }
+        };
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(new Error("Não foi possível abrir o armazenamento local."));
@@ -75,39 +242,109 @@ const done = (tx: IDBTransaction, message = "Falha ao salvar os dados.") => new 
   tx.onabort = tx.onerror = () => reject(new Error(message));
 });
 
+async function assertAvailableOccurrence(store: IDBObjectStore, item: Transaction) {
+  if (item.isDeleted === true) return;
+  const matches = await result<Transaction[]>(store.index("ownerOccurrence").getAll([item.ownerUid, item.occurrenceKey]));
+  if (matches.some((match) => match.id !== item.id && match.isDeleted !== true))
+    throw new Error("Já existe um lançamento para esta ocorrência.");
+}
+
 export class LocalRepository<T extends { id: string; ownerUid: string }> {
-  constructor(private readonly storeName: StoreName) {}
-  async list(ownerUid: string): Promise<T[]> {
+  constructor(private readonly storeName: StoreName, private readonly includeDeleted = false) {}
+  async list(ownerUid: string, includeDeleted = this.includeDeleted): Promise<T[]> {
     const db = await openDatabase();
-    return result(db.transaction(this.storeName).objectStore(this.storeName).index("ownerUid").getAll(ownerUid));
+    const items = await result<T[]>(db.transaction(this.storeName).objectStore(this.storeName).index("ownerUid").getAll(ownerUid));
+    return includeDeleted ? items : items.filter((item) => (item as T & { isDeleted?: boolean }).isDeleted !== true);
   }
-  async put(item: T): Promise<void> {
+  async put(item: T, mutationId: string = crypto.randomUUID()): Promise<void> {
     const db = await openDatabase();
-    await result(db.transaction(this.storeName, "readwrite").objectStore(this.storeName).put(item));
+    const entityType = entityByStore[this.storeName];
+    if (!entityType) throw new Error("Armazenamento não sincronizável.");
+    const tx = db.transaction([this.storeName, "syncOutbox"], "readwrite");
+    const store = tx.objectStore(this.storeName);
+    const previous = await result<T | undefined>(store.get(item.id));
+    if (previous && previous.ownerUid !== item.ownerUid) {
+      tx.abort();
+      throw new Error("Identificador pertencente a outra conta.");
+    }
+    if (this.storeName === "transactions") await assertAvailableOccurrence(store, item as unknown as Transaction);
+    const outboxStore = tx.objectStore("syncOutbox");
+    const id = outboxId(item.ownerUid, mutationId, entityType, item.id);
+    const existingMutation = await result<OutboxEntry | undefined>(outboxStore.get(id));
+    const operation = (item as T & { isDeleted?: boolean }).isDeleted ? "delete" : "upsert";
+    const expectedFingerprint = syncFingerprint(entityType, operation, item as unknown as SyncPayload);
+    if (existingMutation) {
+      if (existingMutation.fingerprint !== expectedFingerprint) {
+        tx.abort();
+        throw new Error("A chave idempotente já foi usada por outra alteração.");
+      }
+      return;
+    }
+    const next = syncRecord(item, previous) as T;
+    store.put(next);
+    enqueueChange(tx, entityType, next as unknown as SyncPayload, previous as unknown as SyncPayload | undefined, operation, mutationId);
+    await done(tx);
   }
-  async putMany(items: T[]): Promise<void> {
+  async putMany(items: T[], mutationId: string = crypto.randomUUID()): Promise<void> {
     if (!items.length) return;
     const db = await openDatabase();
-    const tx = db.transaction(this.storeName, "readwrite");
-    items.forEach((item) => tx.objectStore(this.storeName).put(item));
+    const entityType = entityByStore[this.storeName];
+    if (!entityType) throw new Error("Armazenamento não sincronizável.");
+    const tx = db.transaction([this.storeName, "syncOutbox"], "readwrite");
+    const store = tx.objectStore(this.storeName);
+    for (const item of items) {
+      const previous = await result<T | undefined>(store.get(item.id));
+      if (previous && previous.ownerUid !== item.ownerUid) {
+        tx.abort();
+        throw new Error("Identificador pertencente a outra conta.");
+      }
+      if (this.storeName === "transactions") await assertAvailableOccurrence(store, item as unknown as Transaction);
+      const operation = (item as T & { isDeleted?: boolean }).isDeleted ? "delete" : "upsert";
+      const id = outboxId(item.ownerUid, mutationId, entityType, item.id);
+      const existingMutation = await result<OutboxEntry | undefined>(tx.objectStore("syncOutbox").get(id));
+      const expectedFingerprint = syncFingerprint(entityType, operation, item as unknown as SyncPayload);
+      if (existingMutation) {
+        if (existingMutation.fingerprint !== expectedFingerprint) {
+          tx.abort();
+          throw new Error("A chave idempotente já foi usada por outra alteração.");
+        }
+        continue;
+      }
+      const next = syncRecord(item, previous) as T;
+      store.put(next);
+      enqueueChange(tx, entityType, next as unknown as SyncPayload, previous as unknown as SyncPayload | undefined, operation, mutationId);
+    }
     await done(tx);
   }
   async delete(id: string, ownerUid: string): Promise<T | undefined> {
     const db = await openDatabase();
-    const tx = db.transaction(this.storeName, "readwrite");
+    const entityType = entityByStore[this.storeName];
+    if (!entityType) throw new Error("Armazenamento não sincronizável.");
+    const tx = db.transaction([this.storeName, "syncOutbox"], "readwrite");
     const store = tx.objectStore(this.storeName);
     const item = await result<T | undefined>(store.get(id));
     if (!item || item.ownerUid !== ownerUid) return undefined;
-    store.delete(id);
+    const now = new Date().toISOString();
+    const tombstone = syncRecord({ ...item, isDeleted: true, deletedAt: now } as T, item);
+    store.put(tombstone);
+    enqueueChange(tx, entityType, tombstone as unknown as SyncPayload, item as unknown as SyncPayload, "delete", crypto.randomUUID());
     await done(tx);
     return item;
   }
   async clear(ownerUid: string): Promise<void> {
-    const items = await this.list(ownerUid);
+    const items = await this.list(ownerUid, true);
     if (!items.length) return;
     const db = await openDatabase();
-    const tx = db.transaction(this.storeName, "readwrite");
-    items.forEach(({ id }) => tx.objectStore(this.storeName).delete(id));
+    const entityType = entityByStore[this.storeName];
+    if (!entityType) throw new Error("Armazenamento não sincronizável.");
+    const tx = db.transaction([this.storeName, "syncOutbox"], "readwrite");
+    const mutationId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    items.forEach((item) => {
+      const tombstone = syncRecord({ ...item, isDeleted: true, deletedAt: now } as T, item);
+      tx.objectStore(this.storeName).put(tombstone);
+      enqueueChange(tx, entityType, tombstone as unknown as SyncPayload, item as unknown as SyncPayload, "delete", mutationId);
+    });
     await done(tx);
   }
 }
@@ -116,18 +353,196 @@ export const transactionsRepository = new LocalRepository<Transaction>("transact
 export const categoriesRepository = new LocalRepository<Category>("categories");
 export const calculatorRepository = new LocalRepository<CalculatorEntry>("calculator");
 export const profilesRepository = new LocalRepository<FinancialProfile>("profiles");
+export const seriesRepository = new LocalRepository<TransactionSeries>("series");
+export const seriesSegmentsRepository = new LocalRepository<TransactionSeriesSegment>("seriesSegments");
+
+export async function putTransactionsAtomic(
+  items: Transaction[],
+  options: { mutationId?: string; segmentFrom?: string; endSeriesBefore?: string; clearSeriesEnd?: boolean } = {},
+) {
+  if (!items.length) return;
+  if (items.every((item) => !item.seriesId || item.kind === "single")) {
+    await transactionsRepository.putMany(items, options.mutationId);
+    return;
+  }
+  const ownerUid = items[0]!.ownerUid;
+  if (items.some((item) => item.ownerUid !== ownerUid))
+    throw new Error("Uma operação não pode misturar contas.");
+  const db = await openDatabase();
+  const tx = db.transaction(["transactions", "series", "seriesSegments", "syncOutbox"], "readwrite");
+  const mutationId = options.mutationId ?? crypto.randomUUID();
+  const existingMutation = (await result<OutboxEntry[]>(tx.objectStore("syncOutbox").index("ownerUid").getAll(ownerUid)))
+    .filter((entry) => entry.mutationId === mutationId);
+  if (existingMutation.length) {
+    const transactionEntries = existingMutation.filter((entry) => entry.entityType === "transaction");
+    const isSameMutation = transactionEntries.length === items.length && items.every((item) => {
+      const operation = item.isDeleted ? "delete" : "upsert";
+      return transactionEntries.some((entry) =>
+        entry.recordId === item.id && entry.fingerprint === syncFingerprint("transaction", operation, item));
+    });
+    if (!isSameMutation) {
+      tx.abort();
+      throw new Error("A chave idempotente já foi usada por outra alteração.");
+    }
+    await done(tx);
+    return;
+  }
+  const transactionStore = tx.objectStore("transactions");
+  for (const item of items) {
+    const previous = await result<Transaction | undefined>(transactionStore.get(item.id));
+    if (previous && previous.ownerUid !== ownerUid) {
+      tx.abort();
+      throw new Error("Identificador pertencente a outra conta.");
+    }
+    await assertAvailableOccurrence(transactionStore, item);
+    const next = syncRecord(item, previous);
+    transactionStore.put(next);
+    enqueueChange(tx, "transaction", next, previous, next.isDeleted ? "delete" : "upsert", mutationId);
+  }
+  const grouped = new Map<string, Transaction[]>();
+  for (const item of items) {
+    if (!item.seriesId || item.kind === "single") continue;
+    const group = grouped.get(item.seriesId) ?? [];
+    group.push(item);
+    grouped.set(item.seriesId, group);
+  }
+  for (const [seriesId, values] of grouped) {
+    values.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    const first = values[0]!;
+    const seriesStore = tx.objectStore("series");
+    const previousSeries = await result<TransactionSeries | undefined>(seriesStore.get(seriesId));
+    if (previousSeries && previousSeries.ownerUid !== ownerUid) {
+      tx.abort();
+      throw new Error("Série pertencente a outra conta.");
+    }
+    const requestedEndBefore = options.clearSeriesEnd
+      ? undefined
+      : options.endSeriesBefore ?? values.map((item) => item.seriesEndDate).filter((value): value is string => Boolean(value)).sort()[0] ?? previousSeries?.endBefore;
+    const seriesChanged = !previousSeries || previousSeries.kind !== first.kind || previousSeries.endBefore !== requestedEndBefore || previousSeries.installmentTotal !== (first.installmentTotal ?? previousSeries.installmentTotal);
+    const mutationUpdatedAt = values.map((item) => item.updatedAt).sort().at(-1) ?? new Date().toISOString();
+    const updatedAt = seriesChanged
+      ? mutationUpdatedAt
+      : previousSeries.updatedAt;
+    const nextSeries = syncRecord({
+      id: seriesId,
+      ownerUid,
+      kind: first.kind as "recurring" | "installment",
+      startDate: previousSeries?.startDate ?? first.dueDate,
+      endBefore: requestedEndBefore,
+      installmentTotal: first.installmentTotal ?? previousSeries?.installmentTotal,
+      createdAt: previousSeries?.createdAt ?? first.createdAt,
+      updatedAt,
+      isDeleted: previousSeries?.isDeleted ?? false,
+      deletedAt: previousSeries?.deletedAt,
+      serverVersion: previousSeries?.serverVersion ?? 0,
+    }, previousSeries);
+    if (seriesChanged) {
+      seriesStore.put(nextSeries);
+      enqueueChange(tx, "series", nextSeries, previousSeries, nextSeries.isDeleted ? "delete" : "upsert", mutationId);
+    }
+
+    if (!previousSeries || options.segmentFrom) {
+      const effectiveFrom = options.segmentFrom ?? first.dueDate;
+      const template = values.find((item) => item.dueDate >= effectiveFrom) ?? first;
+      const segmentId = `segment:${seriesId}:${effectiveFrom}`;
+      const segmentStore = tx.objectStore("seriesSegments");
+      const previousSegment = await result<TransactionSeriesSegment | undefined>(segmentStore.get(segmentId));
+      const nextSegment = syncRecord({
+        id: segmentId,
+        ownerUid,
+        seriesId,
+        effectiveFrom,
+        anchorDueDate: template.dueDate,
+        profileId: template.profileId,
+        description: template.description,
+        amountCents: template.amountCents,
+        type: template.type,
+        categoryId: template.categoryId,
+        categoryName: template.categoryName,
+        notes: template.notes,
+        createdAt: previousSegment?.createdAt ?? template.createdAt,
+        updatedAt: mutationUpdatedAt,
+        isDeleted: nextSeries.isDeleted,
+        deletedAt: nextSeries.deletedAt,
+        serverVersion: previousSegment?.serverVersion ?? 0,
+      }, previousSegment);
+      segmentStore.put(nextSegment);
+      enqueueChange(tx, "seriesSegment", nextSegment, previousSegment, nextSegment.isDeleted ? "delete" : "upsert", mutationId);
+    }
+  }
+  await done(tx);
+}
+
+export async function getSyncState(ownerUid: string): Promise<SyncState> {
+  const db = await openDatabase();
+  const current = await result<SyncState | undefined>(db.transaction("syncState").objectStore("syncState").get(ownerUid));
+  if (current) return current;
+  const state: SyncState = { ownerUid, deviceId: crypto.randomUUID(), cursor: 0, epoch: 0, enabled: false };
+  await result(db.transaction("syncState", "readwrite").objectStore("syncState").put(state));
+  return state;
+}
+
+export async function listOutbox(ownerUid: string) {
+  const db = await openDatabase();
+  return result<OutboxEntry[]>(db.transaction("syncOutbox").objectStore("syncOutbox").index("ownerUid").getAll(ownerUid));
+}
+
+export async function listSyncBaseSnapshots(ownerUid: string) {
+  const db = await openDatabase();
+  return result<SyncBaseSnapshot[]>(db.transaction("syncBaseSnapshots").objectStore("syncBaseSnapshots").index("ownerUid").getAll(ownerUid));
+}
+
+export async function listSyncConflicts(ownerUid: string) {
+  const db = await openDatabase();
+  return result<SyncConflict[]>(db.transaction("syncConflicts").objectStore("syncConflicts").index("ownerUid").getAll(ownerUid));
+}
+
+export async function putSyncBaseSnapshot(snapshot: SyncBaseSnapshot) {
+  const expectedId = `${snapshot.ownerUid}:${snapshot.entityType}:${snapshot.recordId}`;
+  if (snapshot.id !== expectedId || snapshot.payload.ownerUid !== snapshot.ownerUid || snapshot.payload.id !== snapshot.recordId)
+    throw new Error("Snapshot-base inválido.");
+  const db = await openDatabase();
+  await result(db.transaction("syncBaseSnapshots", "readwrite").objectStore("syncBaseSnapshots").put(snapshot));
+}
+
+export async function putSyncConflict(conflict: SyncConflict) {
+  const expectedId = `${conflict.ownerUid}:${conflict.mutationId}:${conflict.entityType}:${conflict.recordId}`;
+  if (conflict.id !== expectedId || conflict.local.ownerUid !== conflict.ownerUid || conflict.remote.ownerUid !== conflict.ownerUid || conflict.local.id !== conflict.recordId || conflict.remote.id !== conflict.recordId || (conflict.base && (conflict.base.ownerUid !== conflict.ownerUid || conflict.base.id !== conflict.recordId)))
+    throw new Error("Conflito inválido.");
+  const db = await openDatabase();
+  await result(db.transaction("syncConflicts", "readwrite").objectStore("syncConflicts").put(conflict));
+}
+
+export async function updateSyncState(ownerUid: string, changes: Partial<Omit<SyncState, "ownerUid" | "deviceId">>) {
+  const current = await getSyncState(ownerUid);
+  const next: SyncState = {
+    ...current,
+    ...changes,
+    ownerUid,
+    deviceId: current.deviceId,
+    cursor: Math.max(current.cursor, changes.cursor ?? current.cursor),
+    epoch: Math.max(current.epoch, changes.epoch ?? current.epoch),
+  };
+  const db = await openDatabase();
+  await result(db.transaction("syncState", "readwrite").objectStore("syncState").put(next));
+  return next;
+}
+
+export async function calculatorEntriesForSync(ownerUid: string, limit = 100) {
+  return (await calculatorRepository.list(ownerUid)).sort((a, b) =>
+    b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id),
+  ).slice(0, limit);
+}
 
 export async function ensureFinancialProfiles(ownerUid: string) {
   const existing = await profilesRepository.list(ownerUid);
   if (existing.length) return existing;
   const timestamp = new Date().toISOString();
-  const profile: FinancialProfile = { id: principalId(ownerUid), ownerUid, name: "Principal", createdAt: timestamp, updatedAt: timestamp };
-  const db = await openDatabase();
-  const tx = db.transaction(["profiles", "transactions"], "readwrite");
-  tx.objectStore("profiles").put(profile);
-  const transactions = await result<Transaction[]>(tx.objectStore("transactions").index("ownerUid").getAll(ownerUid));
-  transactions.filter((item) => !item.profileId).forEach((item) => tx.objectStore("transactions").put({ ...item, profileId: profile.id }));
-  await done(tx);
+  const profile: FinancialProfile = { id: principalId(ownerUid), ownerUid, name: "Principal", createdAt: timestamp, updatedAt: timestamp, isDeleted: false };
+  await profilesRepository.put(profile);
+  const transactions = await transactionsRepository.list(ownerUid, true);
+  const unassigned = transactions.filter((item) => !item.profileId);
+  if (unassigned.length) await putTransactionsAtomic(unassigned.map((item) => ({ ...item, profileId: profile.id, updatedAt: timestamp })));
   return [profile];
 }
 
@@ -155,7 +570,11 @@ export async function renameFinancialProfile(ownerUid: string, profileId: string
 }
 
 export async function deleteFinancialProfile(ownerUid: string, sourceId: string, destinationId?: string) {
-  const [profiles, transactions] = await Promise.all([profilesRepository.list(ownerUid), transactionsRepository.list(ownerUid)]);
+  const [profiles, transactions, segments] = await Promise.all([
+    profilesRepository.list(ownerUid),
+    transactionsRepository.list(ownerUid, true),
+    seriesSegmentsRepository.list(ownerUid, true),
+  ]);
   const source = profiles.find((item) => item.id === sourceId);
   if (!source) throw new Error("Perfil inexistente ou pertencente a outra conta.");
   if (profiles.length <= 1) throw new Error("O único perfil não pode ser excluído.");
@@ -163,11 +582,25 @@ export async function deleteFinancialProfile(ownerUid: string, sourceId: string,
   const destination = destinationId ? profiles.find((item) => item.id === destinationId) : undefined;
   if (linked.length && !destination) throw new Error("Selecione um perfil de destino.");
   if (destination?.id === sourceId) throw new Error("O perfil de destino deve ser diferente.");
+  const linkedSegments = segments.filter((item) => item.profileId === sourceId);
+  if (linkedSegments.length && !destination) throw new Error("Selecione um perfil de destino.");
   const db = await openDatabase();
-  const tx = db.transaction(["profiles", "transactions"], "readwrite");
+  const tx = db.transaction(["profiles", "transactions", "seriesSegments", "syncOutbox"], "readwrite");
   const timestamp = new Date().toISOString();
-  linked.forEach((item) => tx.objectStore("transactions").put({ ...item, profileId: destination!.id, updatedAt: timestamp }));
-  tx.objectStore("profiles").delete(sourceId);
+  const mutationId = crypto.randomUUID();
+  linked.forEach((item) => {
+    const next = syncRecord({ ...item, profileId: destination!.id, updatedAt: timestamp }, item);
+    tx.objectStore("transactions").put(next);
+    enqueueChange(tx, "transaction", next, item, next.isDeleted ? "delete" : "upsert", mutationId);
+  });
+  linkedSegments.forEach((item) => {
+    const next = syncRecord({ ...item, profileId: destination!.id, updatedAt: timestamp }, item);
+    tx.objectStore("seriesSegments").put(next);
+    enqueueChange(tx, "seriesSegment", next, item, next.isDeleted ? "delete" : "upsert", mutationId);
+  });
+  const tombstone = syncRecord({ ...source, isDeleted: true, deletedAt: timestamp, updatedAt: timestamp }, source);
+  tx.objectStore("profiles").put(tombstone);
+  enqueueChange(tx, "profile", tombstone, source, "delete", mutationId);
   await done(tx, "A exclusão foi cancelada sem alterar os dados.");
   return { transferred: linked.length, destinationId: destination?.id };
 }
@@ -175,14 +608,14 @@ export async function deleteFinancialProfile(ownerUid: string, sourceId: string,
 export async function ensureDefaultCategories(ownerUid: string) {
   const existing = await categoriesRepository.list(ownerUid);
   const missing = DEFAULT_CATEGORIES.filter((expected) => !existing.some((item) => item.type === expected.type && item.name.localeCompare(expected.name, "pt-BR", { sensitivity: "base" }) === 0));
-  if (missing.length) await categoriesRepository.putMany(missing.map((category) => ({ ...category, id: `default:${crypto.randomUUID()}`, ownerUid, isDefault: true })));
+  if (missing.length) await categoriesRepository.putMany(missing.map((category) => ({ ...category, id: `default:${crypto.randomUUID()}`, ownerUid, isDefault: true, canonicalKey: categoryCanonicalKey(category), isDeleted: false })));
 }
 export async function addCategory(ownerUid: string, name: string, type: Category["type"]) {
   const clean = name.trim();
   if (!clean || clean.length > 40) throw new Error("A categoria deve ter de 1 a 40 caracteres.");
   const existing = await categoriesRepository.list(ownerUid);
   if (existing.some((item) => item.type === type && item.name.localeCompare(clean, "pt-BR", { sensitivity: "base" }) === 0)) throw new Error("Essa categoria já existe.");
-  const category: Category = { id: crypto.randomUUID(), ownerUid, name: clean, type, isDefault: false };
+  const category: Category = { id: crypto.randomUUID(), ownerUid, name: clean, type, isDefault: false, canonicalKey: categoryCanonicalKey({ name: clean, type }), isDeleted: false };
   await categoriesRepository.put(category);
   return category;
 }
@@ -191,6 +624,7 @@ export async function deleteCategory(ownerUid: string, categoryId: string) {
   if (!category) return;
   if (category.isDefault) throw new Error("Categorias padrão não podem ser excluídas.");
   if ((await transactionsRepository.list(ownerUid)).some((item) => item.categoryId === categoryId && item.isDeleted !== true)) throw new Error("A categoria está em uso. Altere a categoria dos lançamentos ativos antes de excluí-la.");
+  if ((await seriesSegmentsRepository.list(ownerUid)).some((item) => item.categoryId === categoryId)) throw new Error("A categoria está em uso por uma série. Altere a categoria da série antes de excluí-la.");
   await categoriesRepository.delete(categoryId, ownerUid);
 }
 
@@ -215,9 +649,23 @@ export async function setSelectedProfile(ownerUid: string, profileId: string) {
   if (profileId && !(await profilesRepository.list(ownerUid)).some((profile) => profile.id === profileId)) throw new Error("Perfil inexistente ou pertencente a outra conta.");
   await setPreference(`selected-profile:${ownerUid}`, profileId);
 }
-export async function clearUserData(ownerUid: string) {
-  await Promise.all([transactionsRepository.clear(ownerUid), categoriesRepository.clear(ownerUid), calculatorRepository.clear(ownerUid), profilesRepository.clear(ownerUid)]);
+/** Limpeza física restrita a fixtures locais; fluxos reais usam resetUserData e tombstones. */
+export async function clearUserDataForTesting(ownerUid: string) {
+  await Promise.all([transactionsRepository.clear(ownerUid), categoriesRepository.clear(ownerUid), calculatorRepository.clear(ownerUid), profilesRepository.clear(ownerUid), seriesRepository.clear(ownerUid), seriesSegmentsRepository.clear(ownerUid)]);
   await setPreference(`selected-profile:${ownerUid}`, "");
+  const db = await openDatabase();
+  const tx = db.transaction([...SYNC_STORES], "readwrite");
+  for (const storeName of ["syncOutbox", "syncBaseSnapshots", "syncConflicts"] as const) {
+    const request = tx.objectStore(storeName).index("ownerUid").openCursor(IDBKeyRange.only(ownerUid));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      cursor.delete();
+      cursor.continue();
+    };
+  }
+  tx.objectStore("syncState").delete(ownerUid);
+  await done(tx);
 }
 
 export async function resetUserData(ownerUid: string) {
@@ -228,74 +676,37 @@ export async function resetUserData(ownerUid: string) {
     name: "Principal",
     createdAt: timestamp,
     updatedAt: timestamp,
+    isDeleted: false,
   };
   const categories: Category[] = DEFAULT_CATEGORIES.map((category) => ({
     ...category,
     id: `default:${crypto.randomUUID()}`,
     ownerUid,
     isDefault: true,
+    canonicalKey: categoryCanonicalKey(category),
+    isDeleted: false,
   }));
-  const db = await openDatabase();
-
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(
-      ["transactions", "categories", "calculator", "profiles", "preferences"],
-      "readwrite",
-    );
-    const ownedStores = ["transactions", "categories", "calculator", "profiles"] as const;
-    let clearedStores = 0;
-    let completed = false;
-
-    const abort = () => {
-      try {
-        tx.abort();
-      } catch {
-        // A transação já encerrou e seu evento final tratará o resultado.
-      }
-    };
-    const recreateDefaults = () => {
-      try {
-        const preferences = tx.objectStore("preferences");
-        preferences.delete(`theme:${ownerUid}`);
-        preferences.put({ id: `theme:${ownerUid}`, value: "dark" });
-        preferences.put({ id: `confirm-delete:${ownerUid}`, value: true });
-        preferences.put({ id: `selected-profile:${ownerUid}`, value: "" });
-        tx.objectStore("profiles").put(profile);
-        const categoryStore = tx.objectStore("categories");
-        categories.forEach((category) => categoryStore.put(category));
-      } catch {
-        abort();
-      }
-    };
-
-    ownedStores.forEach((storeName) => {
-      const request = tx
-        .objectStore(storeName)
-        .index("ownerUid")
-        .openCursor(IDBKeyRange.only(ownerUid));
-      request.onsuccess = () => {
-        const cursor = request.result;
-        if (cursor) {
-          cursor.delete();
-          cursor.continue();
-          return;
-        }
-        clearedStores += 1;
-        if (clearedStores === ownedStores.length) recreateDefaults();
-      };
-    });
-    tx.oncomplete = () => {
-      completed = true;
-      resolve();
-    };
-    tx.onabort = tx.onerror = () => {
-      if (!completed) reject(new Error("O reinício foi cancelado sem alterar os dados."));
-    };
-  });
+  try {
+    await importBackup(ownerUid, {
+      schemaVersion: 4,
+      app: "Gastos Simples",
+      ownerUid,
+      exportedAt: timestamp,
+      transactions: [],
+      categories,
+      calculator: [],
+      profiles: [profile],
+      series: [],
+      seriesSegments: [],
+      preferences: { theme: "dark", confirmBeforeDelete: true, selectedProfileId: "" },
+    }, "replace");
+  } catch {
+    throw new Error("O reinício foi cancelado sem alterar os dados.");
+  }
 }
 
 export type Backup = {
-  schemaVersion: 3;
+  schemaVersion: 4;
   app: "Gastos Simples";
   ownerUid: string;
   exportedAt: string;
@@ -303,56 +714,116 @@ export type Backup = {
   categories: Category[];
   calculator: CalculatorEntry[];
   profiles: FinancialProfile[];
+  series: TransactionSeries[];
+  seriesSegments: TransactionSeriesSegment[];
   preferences: { theme: ThemePreference; confirmBeforeDelete: boolean; selectedProfileId: string };
 };
+type BackupV3 = Omit<Backup, "schemaVersion" | "series" | "seriesSegments"> & { schemaVersion: 3 };
+type BackupV2 = Omit<BackupV3, "schemaVersion" | "profiles" | "transactions" | "preferences"> & {
+  schemaVersion: 2;
+  transactions: Array<Omit<Transaction, "profileId"> & { profileId?: string }>;
+  preferences: { theme: unknown; confirmBeforeDelete: boolean };
+};
+
+function withoutSyncMetadata<T extends SyncPayload>(item: T): T {
+  const { localVersion: _localVersion, serverVersion: _serverVersion, serverRevision: _serverRevision, deletedAt: _deletedAt, ...portable } = item;
+  return portable as T;
+}
+
+function deriveSeries(transactions: Transaction[]) {
+  const series: TransactionSeries[] = [];
+  const seriesSegments: TransactionSeriesSegment[] = [];
+  const groups = new Map<string, Transaction[]>();
+  transactions.forEach((item) => {
+    if (!item.seriesId || item.kind === "single") return;
+    const values = groups.get(item.seriesId) ?? [];
+    values.push(item);
+    groups.set(item.seriesId, values);
+  });
+  groups.forEach((items, seriesId) => {
+    items.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    const first = items[0]!;
+    const updatedAt = items.map((item) => item.updatedAt).sort().at(-1) ?? first.updatedAt;
+    series.push({ id: seriesId, ownerUid: first.ownerUid, kind: first.kind as "recurring" | "installment", startDate: first.dueDate, endBefore: items.map((item) => item.seriesEndDate).filter((value): value is string => Boolean(value)).sort()[0], installmentTotal: first.installmentTotal, createdAt: first.createdAt, updatedAt, isDeleted: false });
+    seriesSegments.push({ id: `segment:${seriesId}:${first.dueDate}`, ownerUid: first.ownerUid, seriesId, effectiveFrom: first.dueDate, anchorDueDate: first.dueDate, profileId: first.profileId, description: first.description, amountCents: first.amountCents, type: first.type, categoryId: first.categoryId, categoryName: first.categoryName, notes: first.notes, createdAt: first.createdAt, updatedAt, isDeleted: false });
+  });
+  return { series, seriesSegments };
+}
+
 export async function exportBackup(ownerUid: string): Promise<Backup> {
   const profiles = await ensureFinancialProfiles(ownerUid);
-  const [transactions, categories, calculator, theme, selectedProfileId] = await Promise.all([
-    transactionsRepository.list(ownerUid), categoriesRepository.list(ownerUid), calculatorRepository.list(ownerUid), getTheme(ownerUid), getSelectedProfile(ownerUid, profiles),
+  const [transactions, categories, calculator, series, seriesSegments, theme, selectedProfileId] = await Promise.all([
+    transactionsRepository.list(ownerUid), categoriesRepository.list(ownerUid), calculatorRepository.list(ownerUid), seriesRepository.list(ownerUid), seriesSegmentsRepository.list(ownerUid), getTheme(ownerUid), getSelectedProfile(ownerUid, profiles),
   ]);
-  return { schemaVersion: 3, app: "Gastos Simples", ownerUid, exportedAt: new Date().toISOString(), transactions, categories, calculator, profiles, preferences: { theme, confirmBeforeDelete: true, selectedProfileId } };
+  return {
+    schemaVersion: 4,
+    app: "Gastos Simples",
+    ownerUid,
+    exportedAt: new Date().toISOString(),
+    transactions: transactions.filter((item) => !item.isDeleted).map(withoutSyncMetadata),
+    categories: categories.map(withoutSyncMetadata),
+    calculator: calculator.map(withoutSyncMetadata),
+    profiles: profiles.map(withoutSyncMetadata),
+    series: series.map(withoutSyncMetadata),
+    seriesSegments: seriesSegments.map(withoutSyncMetadata),
+    preferences: { theme, confirmBeforeDelete: true, selectedProfileId },
+  };
 }
 
 const types = new Set<TransactionType>(["expense", "income"]), statuses = new Set<TransactionStatus>(["pending", "paid", "received"]), kinds = new Set<TransactionKind>(["single", "recurring", "installment"]);
 const text = (value: unknown, max: number, required = true) => typeof value === "string" && value.length <= max && (!required || value.trim().length > 0);
 const timestamp = (value: unknown) => text(value, 40) && /^\d{4}-\d{2}-\d{2}T/.test(value as string) && Number.isFinite(Date.parse(value as string));
 const uniqueIds = (items: Array<{ id: string }>) => new Set(items.map(({ id }) => id)).size === items.length;
-type LegacyBackup = Omit<Backup, "schemaVersion" | "profiles" | "transactions" | "preferences"> & { schemaVersion: 2; transactions: Array<Omit<Transaction, "profileId"> & { profileId?: string }>; preferences: { theme: unknown; confirmBeforeDelete: boolean } };
-
 export function validateBackup(value: unknown, ownerUid: string): Backup {
   if (!value || typeof value !== "object") throw new Error("Arquivo de backup inválido.");
-  const data = value as Partial<Backup | LegacyBackup>;
-  if ((data.schemaVersion !== 2 && data.schemaVersion !== 3) || data.app !== "Gastos Simples" || data.ownerUid !== ownerUid || !timestamp(data.exportedAt) || !Array.isArray(data.transactions) || !Array.isArray(data.categories) || !Array.isArray(data.calculator) || !data.preferences || typeof data.preferences !== "object") throw new Error("Backup inválido ou pertencente a outra conta.");
+  const data = value as Partial<Backup | BackupV3 | BackupV2>;
+  if (![2, 3, 4].includes(Number(data.schemaVersion)) || data.app !== "Gastos Simples" || data.ownerUid !== ownerUid || !timestamp(data.exportedAt) || !Array.isArray(data.transactions) || !Array.isArray(data.categories) || !Array.isArray(data.calculator) || !data.preferences || typeof data.preferences !== "object" || (data.schemaVersion === 4 && (!Array.isArray(data.series) || !Array.isArray(data.seriesSegments)))) throw new Error("Backup inválido ou pertencente a outra conta.");
   const legacy = data.schemaVersion === 2;
   const exportedAt = data.exportedAt as string;
-  const profiles: FinancialProfile[] = legacy ? [{ id: principalId(ownerUid), ownerUid, name: "Principal", createdAt: exportedAt, updatedAt: exportedAt }] : Array.isArray((data as Partial<Backup>).profiles) ? (data as Backup).profiles : [];
-  const transactions = data.transactions.map((item) => ({ ...item, profileId: legacy ? principalId(ownerUid) : item.profileId ?? "" })) as Transaction[];
+  const profiles: FinancialProfile[] = legacy ? [{ id: principalId(ownerUid), ownerUid, name: "Principal", createdAt: exportedAt, updatedAt: exportedAt, isDeleted: false }] : "profiles" in data && Array.isArray(data.profiles) ? data.profiles : [];
+  const transactions = data.transactions.map((item) => {
+    const id = String(item.id ?? "");
+    const kind = item.kind as TransactionKind;
+    const occurrenceKey = kind === "single" ? `single:${id}` : item.occurrenceKey;
+    return { ...item, occurrenceKey, profileId: legacy ? principalId(ownerUid) : item.profileId ?? "", isDeleted: false };
+  }) as Transaction[];
   if (transactions.length > 50_000 || data.categories.length > 1_000 || data.calculator.length > 10_000 || profiles.length > 500 || !profiles.length) throw new Error("O backup excede os limites permitidos.");
-  const collections = [transactions, data.categories, data.calculator, profiles] as Array<Array<{ id: string; ownerUid: string }>>;
+  const derived = deriveSeries(transactions);
+  const series = data.schemaVersion === 4 && Array.isArray(data.series) ? data.series : derived.series;
+  const seriesSegments = data.schemaVersion === 4 && Array.isArray(data.seriesSegments) ? data.seriesSegments : derived.seriesSegments;
+  if (series.length > 10_000 || seriesSegments.length > 50_000) throw new Error("O backup excede os limites permitidos.");
+  const categories = data.categories.map((item) => ({ ...item, canonicalKey: categoryCanonicalKey(item), isDeleted: false })) as Category[];
+  const calculator = data.calculator.map((item) => ({ ...item, isDeleted: false })) as CalculatorEntry[];
+  const collections = [transactions, categories, calculator, profiles, series, seriesSegments] as Array<Array<{ id: string; ownerUid: string }>>;
   const validOwner = collections.flat().every((item) => item && item.ownerUid === ownerUid && text(item.id, 128));
   const validProfiles = profiles.every((item) => text(item.name, 40) && item.name === item.name.trim() && timestamp(item.createdAt) && timestamp(item.updatedAt));
   const profileIds = new Set(profiles.map((item) => item.id));
-  const validTransactions = transactions.every((item) => types.has(item.type) && statuses.has(item.status) && kinds.has(item.kind) && ((item.type === "expense" && item.status !== "received") || (item.type === "income" && item.status !== "paid")) && Number.isSafeInteger(item.amountCents) && item.amountCents > 0 && text(item.description, 80) && text(item.notes, 500, false) && text(item.occurrenceKey, 180) && text(item.categoryId, 128) && text(item.categoryName, 40) && text(item.profileId, 128) && profileIds.has(item.profileId) && isValidCivilDate(item.dueDate) && timestamp(item.createdAt) && timestamp(item.updatedAt) && (!item.paidAt || timestamp(item.paidAt)) && (!item.seriesId || text(item.seriesId, 128)) && (!item.seriesEndDate || (item.kind === "recurring" && isValidCivilDate(item.seriesEndDate))) && (item.isDeleted === undefined || typeof item.isDeleted === "boolean") && ((item.kind === "single" && !item.seriesId && item.installmentCurrent === undefined && item.installmentTotal === undefined) || (item.kind === "recurring" && Boolean(item.seriesId) && item.installmentCurrent === undefined && item.installmentTotal === undefined) || (item.kind === "installment" && Boolean(item.seriesId) && Number.isInteger(item.installmentCurrent) && Number.isInteger(item.installmentTotal) && item.installmentCurrent! >= 1 && item.installmentTotal! >= 2 && item.installmentCurrent! <= item.installmentTotal!)));
-  const validCategories = data.categories.every((item) => types.has(item.type) && text(item.name, 40) && typeof item.isDefault === "boolean");
-  const validCalculator = data.calculator.every((item) => text(item.expression, 200) && text(item.result, 100) && timestamp(item.createdAt));
-  const categoryKeys = data.categories.map((item) => `${item.type}:${nameKey(item.name)}`);
+  const validTransactions = transactions.every((item) => types.has(item.type) && statuses.has(item.status) && kinds.has(item.kind) && ((item.type === "expense" && item.status !== "received") || (item.type === "income" && item.status !== "paid")) && Number.isSafeInteger(item.amountCents) && item.amountCents > 0 && text(item.description, 80) && text(item.notes, 500, false) && text(item.occurrenceKey, 180) && text(item.categoryId, 128) && text(item.categoryName, 40) && text(item.profileId, 128) && profileIds.has(item.profileId) && isValidCivilDate(item.dueDate) && timestamp(item.createdAt) && timestamp(item.updatedAt) && (!item.paidAt || timestamp(item.paidAt)) && (!item.seriesId || text(item.seriesId, 128)) && (!item.seriesEndDate || (item.kind === "recurring" && isValidCivilDate(item.seriesEndDate))) && (item.isDeleted === undefined || typeof item.isDeleted === "boolean") && ((item.kind === "single" && !item.seriesId && item.occurrenceKey === `single:${item.id}` && item.installmentCurrent === undefined && item.installmentTotal === undefined) || (item.kind === "recurring" && Boolean(item.seriesId) && item.occurrenceKey === `${item.seriesId}:${item.dueDate.slice(0, 7)}` && item.installmentCurrent === undefined && item.installmentTotal === undefined) || (item.kind === "installment" && Boolean(item.seriesId) && item.occurrenceKey === `${item.seriesId}:${item.installmentCurrent}` && Number.isInteger(item.installmentCurrent) && Number.isInteger(item.installmentTotal) && item.installmentCurrent! >= 1 && item.installmentTotal! >= 2 && item.installmentCurrent! <= item.installmentTotal!)));
+  const validCategories = categories.every((item) => types.has(item.type) && text(item.name, 40) && typeof item.isDefault === "boolean");
+  const validCalculator = calculator.every((item) => text(item.expression, 200) && text(item.result, 100) && timestamp(item.createdAt));
+  const categoryKeys = categories.map((item) => `${item.type}:${nameKey(item.name)}`);
   const profileKeys = profiles.map((item) => nameKey(item.name));
-  const categoryById = new Map(data.categories.map((item) => [item.id, item]));
+  const categoryById = new Map(categories.map((item) => [item.id, item]));
   const validReferences = transactions.every((item) => { const category = categoryById.get(item.categoryId); return category?.type === item.type && category.name === item.categoryName; });
   const preferences = data.preferences as { theme?: unknown; confirmBeforeDelete?: unknown; selectedProfileId?: unknown };
   const selectedProfileId = legacy ? "" : preferences.selectedProfileId;
   const validPreferences = ["light", "dark", "system"].includes(String(preferences.theme)) && typeof preferences.confirmBeforeDelete === "boolean" && typeof selectedProfileId === "string" && (!selectedProfileId || profileIds.has(selectedProfileId));
-  if (!validOwner || !collections.every(uniqueIds) || !validProfiles || new Set(profileKeys).size !== profileKeys.length || !validTransactions || !validCategories || !validCalculator || new Set(categoryKeys).size !== categoryKeys.length || !validReferences || new Set(transactions.map((item) => `${item.ownerUid}:${item.occurrenceKey}`)).size !== transactions.length || !validPreferences) throw new Error("O backup contém dados inválidos.");
-  return { schemaVersion: 3, app: "Gastos Simples", ownerUid, exportedAt, transactions, categories: data.categories, calculator: data.calculator, profiles, preferences: { theme: "dark", confirmBeforeDelete: true, selectedProfileId: selectedProfileId as string } };
+  const seriesIds = new Set(series.map((item) => item.id));
+  const seriesById = new Map(series.map((item) => [item.id, item]));
+  const validSeries = series.every((item) => ["recurring", "installment"].includes(item.kind) && isValidCivilDate(item.startDate) && timestamp(item.createdAt) && timestamp(item.updatedAt) && (!item.endBefore || isValidCivilDate(item.endBefore)) && (item.kind !== "installment" || (Number.isInteger(item.installmentTotal) && item.installmentTotal! >= 2 && item.installmentTotal! <= 999)));
+  const validSeriesReferences = transactions.every((item) => item.kind === "single" || seriesById.get(item.seriesId!)?.kind === item.kind) && series.every((item) => seriesSegments.some((segment) => segment.seriesId === item.id));
+  const validSegments = seriesSegments.every((item) => seriesIds.has(item.seriesId) && isValidCivilDate(item.effectiveFrom) && isValidCivilDate(item.anchorDueDate) && profileIds.has(item.profileId) && categoryById.get(item.categoryId)?.type === item.type && categoryById.get(item.categoryId)?.name === item.categoryName && text(item.description, 80) && text(item.notes, 500, false) && Number.isSafeInteger(item.amountCents) && item.amountCents > 0 && timestamp(item.createdAt) && timestamp(item.updatedAt));
+  if (!validOwner || !collections.every(uniqueIds) || !validProfiles || new Set(profileKeys).size !== profileKeys.length || !validTransactions || !validCategories || !validCalculator || !validSeries || !validSeriesReferences || !validSegments || new Set(seriesSegments.map((item) => `${item.seriesId}:${item.effectiveFrom}`)).size !== seriesSegments.length || new Set(categoryKeys).size !== categoryKeys.length || !validReferences || new Set(transactions.map((item) => `${item.ownerUid}:${item.occurrenceKey}`)).size !== transactions.length || !validPreferences) throw new Error("O backup contém dados inválidos.");
+  return { schemaVersion: 4, app: "Gastos Simples", ownerUid, exportedAt, transactions, categories, calculator, profiles: profiles.map((item) => ({ ...item, isDeleted: false })), series, seriesSegments, preferences: { theme: "dark", confirmBeforeDelete: true, selectedProfileId: selectedProfileId as string } };
 }
 
-export async function importBackup(ownerUid: string, rawBackup: Backup, mode: "replace" | "merge") {
+export async function importBackup(ownerUid: string, rawBackup: Backup | BackupV3 | BackupV2, mode: "replace" | "merge") {
   const backup = validateBackup(rawBackup, ownerUid);
-  const current = mode === "merge" ? await Promise.all([transactionsRepository.list(ownerUid), categoriesRepository.list(ownerUid), calculatorRepository.list(ownerUid), profilesRepository.list(ownerUid)]) : [[], [], [], []] as [Transaction[], Category[], CalculatorEntry[], FinancialProfile[]];
-  let [transactions, categories, calculator, profiles] = [backup.transactions, backup.categories, backup.calculator, backup.profiles];
+  const current = await Promise.all([transactionsRepository.list(ownerUid), categoriesRepository.list(ownerUid), calculatorRepository.list(ownerUid), profilesRepository.list(ownerUid), seriesRepository.list(ownerUid), seriesSegmentsRepository.list(ownerUid)]);
+  let [transactions, categories, calculator, profiles, series, seriesSegments] = [backup.transactions, backup.categories, backup.calculator, backup.profiles, backup.series, backup.seriesSegments];
   let selectedProfileId = backup.preferences.selectedProfileId;
   if (mode === "merge") {
-    const [oldTransactions, oldCategories, oldCalculator, oldProfiles] = current as [Transaction[], Category[], CalculatorEntry[], FinancialProfile[]];
+    const [oldTransactions, oldCategories, oldCalculator, oldProfiles, oldSeries, oldSegments] = current;
     const profileMap = new Map<string, string>();
     profiles = [...oldProfiles];
     backup.profiles.forEach((profile) => {
@@ -367,30 +838,69 @@ export async function importBackup(ownerUid: string, rawBackup: Backup, mode: "r
       if (same) categoryMap.set(category.id, same.id);
       else { const id = categories.some((item) => item.id === category.id) ? crypto.randomUUID() : category.id; categoryMap.set(category.id, id); categories.push({ ...category, id }); }
     });
-    const ids = new Set(oldTransactions.map((item) => item.id)), occurrences = new Set(oldTransactions.map((item) => item.occurrenceKey));
-    transactions = [...oldTransactions, ...backup.transactions.map((item) => {
-      const id = ids.has(item.id) ? crypto.randomUUID() : item.id;
-      const occurrenceKey = occurrences.has(item.occurrenceKey) ? `${item.occurrenceKey}:import:${crypto.randomUUID()}` : item.occurrenceKey;
-      ids.add(id); occurrences.add(occurrenceKey);
+    const byId = new Map(oldTransactions.map((item) => [item.id, item])), occurrences = new Set(oldTransactions.map((item) => item.occurrenceKey));
+    transactions = [...oldTransactions];
+    backup.transactions.forEach((item) => {
+      if (occurrences.has(item.occurrenceKey) && !byId.has(item.id)) return;
+      const id = byId.has(item.id) ? item.id : item.id;
       const categoryId = categoryMap.get(item.categoryId)!;
       const category = categories.find((value) => value.id === categoryId)!;
-      return { ...item, id, occurrenceKey, profileId: profileMap.get(item.profileId)!, categoryId, categoryName: category.name };
-    })];
-    const calculatorIds = new Set(oldCalculator.map((item) => item.id));
-    calculator = [...oldCalculator, ...backup.calculator.map((item) => ({ ...item, id: calculatorIds.has(item.id) ? crypto.randomUUID() : item.id }))];
+      const next = { ...item, id, occurrenceKey: item.kind === "single" ? `single:${id}` : item.occurrenceKey, profileId: profileMap.get(item.profileId)!, categoryId, categoryName: category.name };
+      const index = transactions.findIndex((value) => value.id === id);
+      if (index >= 0) transactions[index] = next;
+      else transactions.push(next);
+      occurrences.add(next.occurrenceKey);
+    });
+    const calculatorKeys = new Set(oldCalculator.map((item) => `${item.expression}\u0000${item.result}\u0000${item.createdAt}`));
+    calculator = [...oldCalculator, ...backup.calculator.filter((item) => !calculatorKeys.has(`${item.expression}\u0000${item.result}\u0000${item.createdAt}`))];
+    series = [...oldSeries, ...backup.series.filter((item) => !oldSeries.some((old) => old.id === item.id))];
+    seriesSegments = [...oldSegments, ...backup.seriesSegments
+      .filter((item) => !oldSegments.some((old) => old.id === item.id))
+      .map((item) => {
+        const categoryId = categoryMap.get(item.categoryId)!;
+        const category = categories.find((value) => value.id === categoryId)!;
+        return { ...item, profileId: profileMap.get(item.profileId)!, categoryId, categoryName: category.name };
+      })];
     selectedProfileId = selectedProfileId ? profileMap.get(selectedProfileId) ?? "" : "";
   }
   const db = await openDatabase();
-  const tx = db.transaction(["transactions", "categories", "calculator", "profiles", "preferences"], "readwrite");
-  const stores = ["transactions", "categories", "calculator", "profiles"] as const;
-  if (mode === "replace") {
-    const existing = await Promise.all(stores.map((store) => result<Array<{ id: string }>>(tx.objectStore(store).index("ownerUid").getAll(ownerUid))));
-    stores.forEach((store, index) => existing[index]!.forEach((item) => tx.objectStore(store).delete(item.id)));
+  const tx = db.transaction(["transactions", "categories", "calculator", "profiles", "series", "seriesSegments", "preferences", "syncOutbox"], "readwrite");
+  const mutationId = crypto.randomUUID();
+  const deletedAt = new Date().toISOString();
+  const apply = async <T extends SyncPayload>(storeName: Exclude<StoreName, "preferences">, entityType: SyncEntityType, desired: T[]) => {
+    const store = tx.objectStore(storeName);
+    const existing = await result<T[]>(store.index("ownerUid").getAll(ownerUid));
+    const desiredIds = new Set(desired.map((item) => item.id));
+    if (mode === "replace") for (const previous of existing) {
+      if (previous.isDeleted === true || desiredIds.has(previous.id)) continue;
+      const tombstone = syncRecord({ ...previous, isDeleted: true, deletedAt } as T, previous);
+      store.put(tombstone);
+      enqueueChange(tx, entityType, tombstone, previous, "delete", mutationId);
+    }
+    for (const item of desired) {
+      const previous = await result<T | undefined>(store.get(item.id));
+      if (previous && previous.ownerUid !== ownerUid) throw new Error("Identificador pertencente a outra conta.");
+      const next = syncRecord({ ...item, ownerUid, isDeleted: false, deletedAt: undefined } as T, previous);
+      const comparablePrevious = previous ? JSON.stringify(withoutSyncMetadata(previous)) : "";
+      const comparableNext = JSON.stringify(withoutSyncMetadata(next));
+      if (previous && comparablePrevious === comparableNext) continue;
+      store.put(next);
+      enqueueChange(tx, entityType, next, previous, "upsert", mutationId);
+    }
+  };
+  try {
+    await apply("profiles", "profile", profiles);
+    await apply("categories", "category", categories);
+    await apply("series", "series", series);
+    await apply("seriesSegments", "seriesSegment", seriesSegments);
+    await apply("transactions", "transaction", transactions);
+    await apply("calculator", "calculator", calculator);
+    tx.objectStore("preferences").put({ id: `theme:${ownerUid}`, value: "dark" });
+    tx.objectStore("preferences").put({ id: `confirm-delete:${ownerUid}`, value: true });
+    tx.objectStore("preferences").put({ id: `selected-profile:${ownerUid}`, value: selectedProfileId });
+    await done(tx, "A importação foi cancelada sem alterar os dados.");
+  } catch {
+    try { tx.abort(); } catch { /* A transação já foi encerrada. */ }
+    throw new Error("A importação foi cancelada sem alterar os dados.");
   }
-  const values = { transactions, categories, calculator, profiles };
-  stores.forEach((store) => values[store].forEach((item) => tx.objectStore(store).put(item)));
-  tx.objectStore("preferences").put({ id: `theme:${ownerUid}`, value: "dark" });
-  tx.objectStore("preferences").put({ id: `confirm-delete:${ownerUid}`, value: true });
-  tx.objectStore("preferences").put({ id: `selected-profile:${ownerUid}`, value: selectedProfileId });
-  await done(tx, "A importação foi cancelada sem alterar os dados.");
 }

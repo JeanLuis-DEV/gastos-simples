@@ -1,0 +1,158 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Transaction } from "../domain/models";
+import {
+  clearUserDataForTesting,
+  getSyncState,
+  listOutbox,
+  listSyncBaseSnapshots,
+  listSyncConflicts,
+  putSyncBaseSnapshot,
+  putSyncConflict,
+  putTransactionsAtomic,
+  seriesRepository,
+  seriesSegmentsRepository,
+  transactionsRepository,
+  updateSyncState,
+} from "./database";
+
+const item = (id: string, ownerUid = "sync-owner", changes: Partial<Transaction> = {}): Transaction => ({
+  id,
+  ownerUid,
+  profileId: `profile:principal:${ownerUid}`,
+  occurrenceKey: `single:${id}`,
+  description: "Teste",
+  amountCents: 100,
+  type: "expense",
+  status: "pending",
+  dueDate: "2028-01-01",
+  categoryId: "category",
+  categoryName: "Casa",
+  notes: "",
+  kind: "single",
+  createdAt: "2028-01-01T00:00:00.000Z",
+  updatedAt: "2028-01-01T00:00:00.000Z",
+  ...changes,
+});
+
+beforeEach(async () => {
+  await clearUserDataForTesting("sync-owner");
+  await clearUserDataForTesting("other-owner");
+});
+
+describe("fundação local da sincronização", () => {
+  it("grava domínio e outbox na mesma mutação", async () => {
+    await transactionsRepository.put(item("atomic"), "mutation-atomic");
+    expect(await transactionsRepository.list("sync-owner")).toHaveLength(1);
+    expect(await listOutbox("sync-owner")).toEqual([
+      expect.objectContaining({ mutationId: "mutation-atomic", entityType: "transaction", recordId: "atomic", baseVersion: 0 }),
+    ]);
+  });
+
+  it("repete a mesma chave idempotente sem nova versão e rejeita conteúdo diferente", async () => {
+    const original = item("idempotent");
+    await transactionsRepository.put(original, "same-mutation");
+    const version = (await transactionsRepository.list("sync-owner"))[0]!.localVersion;
+    await transactionsRepository.put(original, "same-mutation");
+    expect((await transactionsRepository.list("sync-owner"))[0]!.localVersion).toBe(version);
+    expect((await listOutbox("sync-owner")).filter((entry) => entry.mutationId === "same-mutation")).toHaveLength(1);
+    await expect(transactionsRepository.put({ ...original, amountCents: 200 }, "same-mutation")).rejects.toThrow(/idempotente/);
+    expect((await transactionsRepository.list("sync-owner"))[0]!.amountCents).toBe(100);
+  });
+
+  it("reverte o registro se a outbox falhar", async () => {
+    const originalPut = IDBObjectStore.prototype.put;
+    const spy = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, value, key) {
+      if (this.name === "syncOutbox") throw new Error("falha simulada na outbox");
+      return key === undefined ? originalPut.call(this, value) : originalPut.call(this, value, key);
+    });
+    await expect(transactionsRepository.put(item("rollback"))).rejects.toThrow();
+    spy.mockRestore();
+    expect(await transactionsRepository.list("sync-owner")).toEqual([]);
+  });
+
+  it("impede colisão de identificador entre contas", async () => {
+    await transactionsRepository.put(item("shared-id", "sync-owner"));
+    await expect(transactionsRepository.put(item("shared-id", "other-owner"))).rejects.toThrow(/outra conta/);
+    expect(await transactionsRepository.list("other-owner")).toEqual([]);
+  });
+
+  it("impede duplicação ativa pela occurrenceKey mesmo com IDs diferentes", async () => {
+    await transactionsRepository.put(item("first-occurrence"));
+    await expect(transactionsRepository.put(item("second-occurrence", "sync-owner", {
+      occurrenceKey: "single:first-occurrence",
+    }))).rejects.toThrow(/ocorrência/);
+    expect(await transactionsRepository.list("sync-owner")).toHaveLength(1);
+  });
+
+  it("mantém estado e deviceId estáveis e isolados por conta", async () => {
+    const first = await getSyncState("sync-owner");
+    expect(await getSyncState("sync-owner")).toEqual(first);
+    expect((await getSyncState("other-owner")).deviceId).not.toBe(first.deviceId);
+    expect(first).toMatchObject({ cursor: 0, epoch: 0, enabled: false });
+    await updateSyncState("sync-owner", { cursor: 9, epoch: 3, lastSyncedAt: "2028-01-01T00:00:00.000Z" });
+    const monotonic = await updateSyncState("sync-owner", { cursor: 2, epoch: 1 });
+    expect(monotonic).toMatchObject({ cursor: 9, epoch: 3, deviceId: first.deviceId });
+  });
+
+  it("persiste snapshots-base e conflitos somente na conta correspondente", async () => {
+    const base = item("merge-record", "sync-owner");
+    await putSyncBaseSnapshot({
+      id: "sync-owner:transaction:merge-record",
+      ownerUid: "sync-owner",
+      entityType: "transaction",
+      recordId: "merge-record",
+      serverVersion: 4,
+      payload: base,
+    });
+    await putSyncConflict({
+      id: "sync-owner:mutation-conflict:transaction:merge-record",
+      ownerUid: "sync-owner",
+      entityType: "transaction",
+      recordId: "merge-record",
+      mutationId: "mutation-conflict",
+      base,
+      local: { ...base, description: "Local" },
+      remote: { ...base, description: "Remoto" },
+      conflictingFields: ["description"],
+      createdAt: "2028-01-01T00:00:00.000Z",
+    });
+    expect(await listSyncBaseSnapshots("sync-owner")).toHaveLength(1);
+    expect(await listSyncConflicts("sync-owner")).toHaveLength(1);
+    expect(await listSyncBaseSnapshots("other-owner")).toEqual([]);
+    await expect(putSyncBaseSnapshot({
+      id: "other-owner:transaction:merge-record",
+      ownerUid: "other-owner",
+      entityType: "transaction",
+      recordId: "merge-record",
+      serverVersion: 4,
+      payload: base,
+    })).rejects.toThrow(/inválido/);
+  });
+
+  it("materializa série e segmento explícitos junto das ocorrências", async () => {
+    const seriesId = "series-1";
+    await putTransactionsAtomic([
+      item("installment-1", "sync-owner", { kind: "installment", seriesId, occurrenceKey: `${seriesId}:1`, installmentCurrent: 1, installmentTotal: 2 }),
+      item("installment-2", "sync-owner", { kind: "installment", seriesId, occurrenceKey: `${seriesId}:2`, installmentCurrent: 2, installmentTotal: 2, dueDate: "2028-02-01" }),
+    ], { mutationId: "series-mutation" });
+    expect(await seriesRepository.list("sync-owner")).toEqual([expect.objectContaining({ id: seriesId, kind: "installment", installmentTotal: 2 })]);
+    expect(await seriesSegmentsRepository.list("sync-owner")).toEqual([expect.objectContaining({ seriesId, effectiveFrom: "2028-01-01" })]);
+    expect((await listOutbox("sync-owner")).filter((entry) => entry.mutationId === "series-mutation")).toHaveLength(4);
+  });
+
+  it("não altera série ou segmento ao materializar nova ocorrência e repete o lote de forma idempotente", async () => {
+    const seriesId = "recurring-series";
+    const january = item("recurring-jan", "sync-owner", { kind: "recurring", seriesId, occurrenceKey: `${seriesId}:2028-01` });
+    await putTransactionsAtomic([january], { mutationId: "create-series" });
+    const originalSeries = (await seriesRepository.list("sync-owner"))[0]!;
+    const originalSegment = (await seriesSegmentsRepository.list("sync-owner"))[0]!;
+    const february = item("recurring-feb", "sync-owner", { kind: "recurring", seriesId, occurrenceKey: `${seriesId}:2028-02`, dueDate: "2028-02-01" });
+    await putTransactionsAtomic([february], { mutationId: "materialize-february" });
+    await putTransactionsAtomic([february], { mutationId: "materialize-february" });
+
+    expect(await seriesRepository.list("sync-owner")).toEqual([originalSeries]);
+    expect(await seriesSegmentsRepository.list("sync-owner")).toEqual([originalSegment]);
+    expect((await transactionsRepository.list("sync-owner")).find(({ id }) => id === february.id)?.localVersion).toBe(1);
+    expect((await listOutbox("sync-owner")).filter((entry) => entry.mutationId === "materialize-february")).toHaveLength(1);
+  });
+});

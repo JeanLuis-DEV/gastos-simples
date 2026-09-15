@@ -2,7 +2,14 @@ export type TransactionType = "expense" | "income";
 export type TransactionStatus = "pending" | "paid" | "received";
 export type TransactionKind = "single" | "recurring" | "installment";
 
-export type Transaction = {
+export type SyncMetadata = {
+  localVersion?: number;
+  serverVersion?: number;
+  serverRevision?: number;
+  deletedAt?: string;
+};
+
+export type Transaction = SyncMetadata & {
   id: string;
   ownerUid: string;
   profileId: string;
@@ -26,27 +33,61 @@ export type Transaction = {
   isDeleted?: boolean;
 };
 
-export type FinancialProfile = {
+export type FinancialProfile = SyncMetadata & {
   id: string;
   ownerUid: string;
   name: string;
   createdAt: string;
   updatedAt: string;
+  isDeleted?: boolean;
 };
 
-export type Category = {
+export type Category = SyncMetadata & {
   id: string;
   ownerUid: string;
   name: string;
   type: TransactionType;
   isDefault: boolean;
+  canonicalKey?: string;
+  isDeleted?: boolean;
 };
-export type CalculatorEntry = {
+export type CalculatorEntry = SyncMetadata & {
   id: string;
   ownerUid: string;
   expression: string;
   result: string;
   createdAt: string;
+  isDeleted?: boolean;
+};
+
+export type TransactionSeries = SyncMetadata & {
+  id: string;
+  ownerUid: string;
+  kind: Exclude<TransactionKind, "single">;
+  startDate: string;
+  endBefore?: string;
+  installmentTotal?: number;
+  createdAt: string;
+  updatedAt: string;
+  isDeleted?: boolean;
+};
+
+export type TransactionSeriesSegment = SyncMetadata & {
+  id: string;
+  ownerUid: string;
+  seriesId: string;
+  effectiveFrom: string;
+  anchorDueDate: string;
+  profileId: string;
+  description: string;
+  amountCents: number;
+  type: TransactionType;
+  categoryId: string;
+  categoryName: string;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+  isDeleted?: boolean;
 };
 export type ThemePreference = "dark";
 

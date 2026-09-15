@@ -5,7 +5,7 @@ import "../styles/app.css";
 import { DashboardApp } from "../features/dashboard/DashboardApp";
 import { LoginView } from "../features/auth/LoginView";
 import { PaywallView } from "../features/subscription/PaywallView";
-import { categoriesRepository, clearUserData, profilesRepository, transactionsRepository } from "../storage/database";
+import { categoriesRepository, clearUserDataForTesting, profilesRepository, transactionsRepository } from "../storage/database";
 import type { Category, FinancialProfile, Transaction } from "../domain/models";
 
 const ownerUid = "visual-user";
@@ -137,7 +137,7 @@ else if (mode === "paywall")
     />,
   );
 else {
-  await clearUserData(ownerUid);
+  await clearUserDataForTesting(ownerUid);
   await transactionsRepository.putMany(samples);
   await categoriesRepository.putMany(visualCategories);
   await profilesRepository.putMany(visualProfiles);

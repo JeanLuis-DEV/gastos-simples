@@ -18,7 +18,7 @@ export function FinancialProfilesCard({ ownerUid, profiles, transactions, select
   const [name, setName] = useState(""), [destinationId, setDestinationId] = useState(""), [busy, setBusy] = useState(false);
   const lock = useRef(false);
   const trigger = useRef<HTMLElement | null>(null);
-  const restoreFocus = () => setTimeout(() => trigger.current?.focus(), 0);
+  const restoreFocus = () => setTimeout(() => setTimeout(() => trigger.current?.focus(), 0), 0);
   const closeEditor = () => { if (!busy) { setCreating(false); setEditing(undefined); restoreFocus(); } };
   const closeDelete = () => { if (!busy) { setDeleting(undefined); restoreFocus(); } };
   const linkedCount = deleting ? transactions.filter((item) => item.profileId === deleting.id).length : 0;

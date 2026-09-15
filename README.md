@@ -1,6 +1,6 @@
 # Gastos Simples
 
-Aplicativo Web Premium para controle financeiro pessoal. O frontend usa Vite, React 19, TypeScript estrito, CSS e `@apps-simples/ui@0.4.1`. A autenticação usa Firebase Authentication; assinatura e entitlement usam Cloudflare Pages Functions, D1 e Mercado Pago; dados financeiros e perfis ficam somente no IndexedDB, isolados por Firebase UID.
+Aplicativo Web Premium para controle financeiro pessoal. O frontend usa Vite, React 19, TypeScript estrito, CSS e `@apps-simples/ui@0.4.1`. A autenticação usa Firebase Authentication; assinatura e entitlement usam Cloudflare Pages Functions, D1 e Mercado Pago. Os dados financeiros e perfis continuam somente no IndexedDB nesta fase; a fundação local de sincronização está protegida por kill switch e não possui transporte remoto.
 
 URL oficial: https://gastos.centralsimples.com.br/
 
@@ -25,6 +25,8 @@ Os nomes dos perfis integram o backup local. Os relatórios PDF são gerados e b
 - O host público legado `gastos-simples.pages.dev` redireciona permanentemente para o domínio oficial, preservando caminho e query; rotas `/api/*` e URLs de preview não são redirecionadas.
 
 Não há Firebase Hosting, Firestore, Storage, Admin SDK, PWA, service worker, manifest, Android ou Capacitor. O frontend não contém bypass de assinatura. O acesso administrativo não usa e-mail nem dados enviados pelo cliente: compara somente o UID do token Firebase já validado com `ADMIN_FIREBASE_UIDS` no backend.
+
+A arquitetura e as invariantes da fundação local de sincronização estão registradas em [`docs/sync-local-foundation.md`](docs/sync-local-foundation.md). `VITE_SYNC_ENABLED` deve permanecer `false` até a implementação e aprovação explícitas do backend, do consentimento e do rollout.
 
 Após aprovação funcional e visual, a política pública da Central de Privacidade deverá ser atualizada para documentar perfis locais, backup e geração local de PDF.
 

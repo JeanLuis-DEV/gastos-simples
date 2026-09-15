@@ -11,7 +11,7 @@ import {
   transactionsForView,
   type SeriesScope,
 } from "../../domain/transactions";
-import { transactionsRepository } from "../../storage/database";
+import { putTransactionsAtomic, transactionsRepository } from "../../storage/database";
 import { ConfirmModal } from "./ConfirmModal";
 import { AccessibleSelect } from "./AccessibleSelect";
 import { TransactionFilters } from "./TransactionFilters";
@@ -47,7 +47,8 @@ export function TransactionsView({
     [duplicating, setDuplicating] = useState<Transaction>(),
     [duplicateBusy, setDuplicateBusy] = useState(false),
     [duplicateError, setDuplicateError] = useState(""),
-    [lastDeleted, setLastDeleted] = useState<Transaction[]>([]);
+    [lastDeleted, setLastDeleted] = useState<Transaction[]>([]),
+    [lastDeleteScope, setLastDeleteScope] = useState<SeriesScope>("single");
   const settleLock = useRef(false);
   const settleTrigger = useRef<HTMLButtonElement | null>(null);
   const duplicateLock = useRef(false);
@@ -68,7 +69,7 @@ export function TransactionsView({
     }
   }, [prefill]);
   const restoreSettleFocus = () => {
-    queueMicrotask(() => settleTrigger.current?.focus());
+    setTimeout(() => setTimeout(() => settleTrigger.current?.focus(), 0), 0);
   };
   const closeSettle = () => {
     if (settleLock.current) return;
@@ -97,7 +98,7 @@ export function TransactionsView({
     }
   };
   const restoreDuplicateFocus = () =>
-    setTimeout(() => duplicateTrigger.current?.focus(), 0);
+    setTimeout(() => setTimeout(() => duplicateTrigger.current?.focus(), 0), 0);
   const closeDuplicate = () => {
     if (duplicateLock.current) return;
     setDuplicating(undefined);
@@ -111,11 +112,12 @@ export function TransactionsView({
       setDuplicateBusy(true);
       setDuplicateError("");
       const now = new Date().toISOString();
+      const id = crypto.randomUUID();
       await transactionsRepository.put({
         ...duplicating,
-        id: crypto.randomUUID(),
+        id,
         seriesId: undefined,
-        occurrenceKey: `single:${crypto.randomUUID()}`,
+        occurrenceKey: `single:${id}`,
         kind: "single",
         installmentCurrent: undefined,
         installmentTotal: undefined,
@@ -141,7 +143,7 @@ export function TransactionsView({
     }
   };
   const restoreDeleteFocus = () =>
-    queueMicrotask(() => deleteTrigger.current?.focus());
+    setTimeout(() => setTimeout(() => deleteTrigger.current?.focus(), 0), 0);
   const closeDelete = () => {
     if (deleteBusy) return;
     setDeleting(undefined);
@@ -153,10 +155,14 @@ export function TransactionsView({
       setDeleteBusy(true);
       const now = new Date().toISOString();
       const targets = selectSeriesItems(items, deleting, deleteScope);
-      await transactionsRepository.putMany(
+      await putTransactionsAtomic(
         targets.map((i) => ({ ...i, isDeleted: true, updatedAt: now })),
+        deleteScope === "future" && deleting.seriesId
+          ? { endSeriesBefore: deleting.dueDate }
+          : undefined,
       );
       setLastDeleted(targets);
+      setLastDeleteScope(deleteScope);
       setDeleting(undefined);
       restoreDeleteFocus();
       onMessage(
@@ -180,8 +186,11 @@ export function TransactionsView({
     if (!lastDeleted.length) return;
     try {
       const now = new Date().toISOString();
-      await transactionsRepository.putMany(
+      await putTransactionsAtomic(
         lastDeleted.map((item) => ({ ...item, isDeleted: false, updatedAt: now })),
+        lastDeleteScope === "future" && lastDeleted.some((item) => item.seriesId)
+          ? { clearSeriesEnd: true }
+          : undefined,
       );
       setLastDeleted([]);
       onMessage("Exclusão desfeita.");

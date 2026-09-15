@@ -1,5 +1,5 @@
 import { addMonthsClamped, monthKey } from "./dates";
-import type { Transaction, TransactionFilters } from "./models";
+import type { Transaction, TransactionFilters, TransactionSeriesSegment } from "./models";
 
 export type TransactionDraft = Omit<
   Transaction,
@@ -21,27 +21,36 @@ export function createTransactions(
     throw new Error("Parcelamento deve ter de 2 a 999 parcelas.");
   const seriesId = draft.kind === "single" ? undefined : crypto.randomUUID();
   const timestamp = now.toISOString();
-  return Array.from({ length: count }, (_, index) => ({
-    ...draft,
-    installments: undefined,
-    id: crypto.randomUUID(),
-    seriesId,
-    occurrenceKey:
-      draft.kind === "recurring"
-        ? `${seriesId}:${draft.dueDate.slice(0, 7)}`
-        : `${seriesId ?? "single"}:${index + 1}`,
-    dueDate: addMonthsClamped(draft.dueDate, index),
-    installmentCurrent: draft.kind === "installment" ? index + 1 : undefined,
-    installmentTotal: draft.kind === "installment" ? count : undefined,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  }));
+  return Array.from({ length: count }, (_, index) => {
+    const id = crypto.randomUUID();
+    return {
+      ...draft,
+      installments: undefined,
+      id,
+      seriesId,
+      occurrenceKey:
+        draft.kind === "recurring"
+          ? `${seriesId}:${draft.dueDate.slice(0, 7)}`
+          : draft.kind === "installment"
+            ? `${seriesId}:${index + 1}`
+            : `single:${id}`,
+      dueDate: addMonthsClamped(draft.dueDate, index),
+      installmentCurrent: draft.kind === "installment" ? index + 1 : undefined,
+      installmentTotal: draft.kind === "installment" ? count : undefined,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      localVersion: 0,
+      serverVersion: 0,
+      isDeleted: false,
+    };
+  });
 }
 
 export function recurringOccurrenceForMonth(
   items: Transaction[],
   month: string,
   now = new Date(),
+  segments: TransactionSeriesSegment[] = [],
 ): Transaction | undefined {
   const template = items
     .filter((item) => item.kind === "recurring" && item.seriesId)
@@ -63,7 +72,11 @@ export function recurringOccurrenceForMonth(
     )
   )
     return undefined;
-  const [startYear, startMonth] = template.dueDate
+  const segment = segments
+    .filter((item) => item.seriesId === template.seriesId && item.isDeleted !== true && item.effectiveFrom.slice(0, 7) <= month)
+    .sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0];
+  const anchor = segment?.anchorDueDate ?? template.dueDate;
+  const [startYear, startMonth] = anchor
     .slice(0, 7)
     .split("-")
     .map(Number);
@@ -72,9 +85,20 @@ export function recurringOccurrenceForMonth(
   const timestamp = now.toISOString();
   return {
     ...template,
+    ...(segment
+      ? {
+          profileId: segment.profileId,
+          description: segment.description,
+          amountCents: segment.amountCents,
+          type: segment.type,
+          categoryId: segment.categoryId,
+          categoryName: segment.categoryName,
+          notes: segment.notes,
+        }
+      : {}),
     id: crypto.randomUUID(),
     occurrenceKey: `${template.seriesId}:${month}`,
-    dueDate: addMonthsClamped(template.dueDate, delta),
+    dueDate: addMonthsClamped(anchor, delta),
     status: "pending",
     paidAt: undefined,
     createdAt: timestamp,
