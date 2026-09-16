@@ -1,4 +1,5 @@
 import { Button } from "@apps-simples/ui";
+import { useState } from "react";
 import { canUseRemoteSync } from "../../sync/config";
 import type { SyncSnapshot } from "../../sync/engine";
 
@@ -11,20 +12,43 @@ const labels = {
   conflicts: "Conflitos pendentes",
 } as const;
 
-export function SyncStatus({ snapshot, onSync }: { snapshot: SyncSnapshot; onSync: () => void }) {
+export function SyncStatus({ snapshot, onSync }: { snapshot: SyncSnapshot; onSync: () => void | Promise<void> }) {
+  const [pending, setPending] = useState(false);
   if (!canUseRemoteSync() || !snapshot.enabled) return null;
-  const important = snapshot.status === "error" || snapshot.status === "conflicts";
+  const syncing = pending || snapshot.status === "syncing";
+  const exceptional = snapshot.status === "offline" || snapshot.status === "error" || snapshot.status === "conflicts";
+  const actionLabel = snapshot.status === "error" ? "Tentar novamente" : syncing ? "Sincronizando…" : "Sincronizar agora";
+  const handleSync = async () => {
+    if (syncing || snapshot.status === "offline") return;
+    setPending(true);
+    try {
+      await onSync();
+    } finally {
+      setPending(false);
+    }
+  };
   return (
-    <Button
-      size="compact"
-      variant="ghost"
-      className={`sync-status sync-status--${snapshot.status}`}
-      onClick={onSync}
-      disabled={snapshot.status === "syncing"}
-      aria-label={`${labels[snapshot.status]}. Sincronizar agora`}
-    >
-      <span className="sync-status-dot" aria-hidden="true" />
-      <span aria-live={important ? "polite" : "off"}>{labels[snapshot.status]}</span>
-    </Button>
+    <div className={`sync-control sync-control--${snapshot.status}`}>
+      <span
+        className={exceptional ? "sync-state" : "sr-only"}
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {labels[snapshot.status]}
+      </span>
+      {snapshot.status !== "offline" && (
+        <Button
+          size="compact"
+          variant="ghost"
+          className="sync-action"
+          onClick={() => void handleSync()}
+          disabled={syncing}
+          aria-label={actionLabel}
+        >
+          {actionLabel}
+        </Button>
+      )}
+    </div>
   );
 }

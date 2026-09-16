@@ -100,25 +100,32 @@
   flex: 0 0 auto;
 }
 
-.sync-status {
+.sync-control {
   display: inline-flex;
   align-items: center;
-  gap: var(--as-space-2);
+  gap: var(--as-space-1);
+  min-width: 0;
   white-space: nowrap;
 }
 
-.sync-status-dot {
-  width: 0.65rem;
-  height: 0.65rem;
-  border: 2px solid currentColor;
-  border-radius: 50%;
-  background: transparent;
+.sync-action {
+  min-height: 2.75rem;
+  min-width: 2.75rem;
 }
 
-.sync-status--synced .sync-status-dot { background: currentColor; }
-.sync-status--syncing .sync-status-dot { border-style: dotted; }
-.sync-status--error,
-.sync-status--conflicts { color: var(--as-color-danger, #ff8f8f); }
+.sync-state {
+  font-size: var(--as-font-size-xs);
+  font-weight: 700;
+}
+
+.sync-control--offline .sync-state {
+  color: var(--as-color-text-muted);
+}
+
+.sync-control--error .sync-state,
+.sync-control--conflicts .sync-state {
+  color: var(--as-color-danger, #ff8f8f);
+}
 
 .sync-settings-card {
   grid-column: 1 / -1;
@@ -1092,6 +1099,11 @@
   }
   .header-actions {
     gap: 0;
+    min-width: 0;
+  }
+  .sync-action {
+    padding-inline: var(--as-space-2);
+    font-size: var(--as-font-size-xs);
   }
   .transaction-row {
     padding: var(--as-space-3);
