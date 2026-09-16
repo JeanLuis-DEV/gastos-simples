@@ -62,6 +62,20 @@ export async function ensureSyncAccount(identity: AuthIdentity, env: Env) {
     .first<{ sync_epoch: number; revision: number; min_available_revision: number; activated_at: string | null; disabled_at: string | null }>();
 }
 
+export async function hasRemoteFinancialData(env: Env, ownerUid: string) {
+  const result = await env.DB.prepare(`SELECT (
+    EXISTS(SELECT 1 FROM sync_profiles WHERE firebase_uid=? AND is_deleted=0) OR
+    EXISTS(SELECT 1 FROM sync_categories WHERE firebase_uid=? AND is_deleted=0) OR
+    EXISTS(SELECT 1 FROM sync_series WHERE firebase_uid=? AND is_deleted=0) OR
+    EXISTS(SELECT 1 FROM sync_series_segments WHERE firebase_uid=? AND is_deleted=0) OR
+    EXISTS(SELECT 1 FROM sync_transactions WHERE firebase_uid=? AND is_deleted=0) OR
+    EXISTS(SELECT 1 FROM sync_calculator_entries WHERE firebase_uid=? AND is_deleted=0)
+  ) AS has_data`)
+    .bind(ownerUid, ownerUid, ownerUid, ownerUid, ownerUid, ownerUid)
+    .first<{ has_data: number }>();
+  return result?.has_data === 1;
+}
+
 export async function updateRetention(env: Env, ownerUid: string, status: SyncEntitlement) {
   const now = new Date();
   const eligible = ["trial", "active", "admin"].includes(status);

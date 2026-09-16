@@ -1,6 +1,6 @@
 import { authenticate } from "../../_shared/auth";
 import { handle, json } from "../../_shared/http";
-import { ensureSyncAccount, isSyncCanaryAllowed, isSyncPolicyPublished, rateLimitSync, syncEntitlement, updateRetention } from "../../_shared/syncAccess";
+import { ensureSyncAccount, hasRemoteFinancialData, isSyncCanaryAllowed, isSyncPolicyPublished, rateLimitSync, syncEntitlement, updateRetention } from "../../_shared/syncAccess";
 import type { PagesContext } from "../../types";
 
 export async function onRequestGet(context: PagesContext) {
@@ -10,6 +10,7 @@ export async function onRequestGet(context: PagesContext) {
     const account = await ensureSyncAccount(identity, context.env);
     const entitlement = await syncEntitlement(identity, context.env);
     await updateRetention(context.env, identity.uid, entitlement);
+    const hasRemoteData = await hasRemoteFinancialData(context.env, identity.uid);
     return json(context.env, {
       protocolVersion: 1,
       available: context.env.SYNC_ENABLED === "true" && isSyncPolicyPublished(context.env) && isSyncCanaryAllowed(identity.uid, context.env),
@@ -21,6 +22,7 @@ export async function onRequestGet(context: PagesContext) {
       canPull: Boolean(account?.activated_at && !account.disabled_at),
       canExport: true,
       canDelete: true,
+      hasRemoteData,
       serverTime: new Date().toISOString(),
     }, 200, context.request);
   });

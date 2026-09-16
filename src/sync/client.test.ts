@@ -31,7 +31,7 @@ describe("cliente remoto de sincronização", () => {
     vi.mocked(getIdToken).mockResolvedValueOnce("old-token").mockResolvedValueOnce("new-token");
     const fetchSpy = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ error: "Sessão inválida." }), { status: 401, headers: { "Content-Type": "application/json" } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ protocolVersion: 1, available: true, enabled: false, syncEpoch: 1, highWatermark: 0, canPush: false, canPull: false, canExport: true, canDelete: true, serverTime: "2028-01-01T00:00:00.000Z" }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ protocolVersion: 1, available: true, enabled: false, syncEpoch: 1, highWatermark: 0, canPush: false, canPull: false, canExport: true, canDelete: true, hasRemoteData: false, serverTime: "2028-01-01T00:00:00.000Z" }), { status: 200, headers: { "Content-Type": "application/json" } }));
     const { syncApi } = await import("./client");
     await expect(syncApi.status()).resolves.toMatchObject({ available: true });
     expect(getIdToken).toHaveBeenNthCalledWith(1, false);

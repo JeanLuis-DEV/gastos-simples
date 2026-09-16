@@ -136,6 +136,16 @@
   margin-top: var(--as-space-4);
 }
 
+.sync-cloud-data {
+  margin-top: var(--as-space-5);
+  padding-top: var(--as-space-4);
+  border-top: 1px solid var(--as-color-border-subtle);
+}
+
+.sync-cloud-data h3 {
+  margin-top: 0;
+}
+
 .sync-conflict {
   padding: var(--as-space-4);
   border: 1px solid var(--as-color-border);

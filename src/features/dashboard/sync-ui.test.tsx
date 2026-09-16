@@ -1,7 +1,19 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { SyncManager } from "../../sync/engine";
+import type { SyncManager, SyncSnapshot } from "../../sync/engine";
 import { SYNC_PRIVACY_POLICY_VERSION } from "../../../shared/syncPolicy";
+
+const syncSnapshot = (changes: Partial<SyncSnapshot> = {}): SyncSnapshot => ({
+  status: "disabled",
+  enabled: false,
+  available: true,
+  canPush: true,
+  canExport: true,
+  canDelete: true,
+  hasRemoteData: false,
+  conflictCount: 0,
+  ...changes,
+});
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -15,7 +27,7 @@ describe("interface de sincronização", () => {
     const activate = vi.fn(async () => undefined);
     const manager = { activate, syncNow: vi.fn(), disable: vi.fn(), refreshStatus: vi.fn(), schedule: vi.fn() } as unknown as SyncManager;
     const { SyncSettingsCard } = await import("./SyncSettingsCard");
-    render(<SyncSettingsCard ownerUid="uid" manager={manager} snapshot={{ status: "disabled", enabled: false, available: true, canPush: true, conflictCount: 0 }} onChanged={vi.fn(async () => undefined)} onError={vi.fn()} onMessage={vi.fn()} />);
+    render(<SyncSettingsCard ownerUid="uid" manager={manager} snapshot={syncSnapshot()} onChanged={vi.fn(async () => undefined)} onError={vi.fn()} onMessage={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Ativar sincronização" }));
     const checkbox = screen.getByRole("checkbox", { name: /Li as informações/i }) as HTMLInputElement;
     expect(checkbox.checked).toBe(false);
@@ -26,12 +38,22 @@ describe("interface de sincronização", () => {
     await waitFor(() => expect(activate).toHaveBeenCalledWith(SYNC_PRIVACY_POLICY_VERSION));
   });
 
+  it("não expõe a interface de sincronização quando o backend não autoriza a conta", async () => {
+    vi.stubEnv("VITE_SYNC_ENABLED", "true");
+    vi.resetModules();
+    const manager = { activate: vi.fn(), syncNow: vi.fn(), disable: vi.fn(), refreshStatus: vi.fn(), schedule: vi.fn() } as unknown as SyncManager;
+    const { SyncSettingsCard } = await import("./SyncSettingsCard");
+    render(<SyncSettingsCard ownerUid="uid" manager={manager} snapshot={syncSnapshot({ available: false })} onChanged={vi.fn(async () => undefined)} onError={vi.fn()} onMessage={vi.fn()} />);
+    expect(screen.queryByRole("heading", { name: "Seus dados e sincronização" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Ativar sincronização" })).toBeNull();
+  });
+
   it("separa o estado sincronizado da ação manual e permite ativação por teclado", async () => {
     vi.stubEnv("VITE_SYNC_ENABLED", "true");
     vi.resetModules();
     const { SyncStatus } = await import("./SyncStatus");
     const onSync = vi.fn(async () => undefined);
-    render(<SyncStatus snapshot={{ status: "synced", enabled: true, available: true, canPush: true, conflictCount: 0 }} onSync={onSync} />);
+    render(<SyncStatus snapshot={syncSnapshot({ status: "synced", enabled: true })} onSync={onSync} />);
     expect(screen.queryByRole("button", { name: "Sincronizado" })).toBeNull();
     expect(screen.getByRole("status").textContent).toBe("Sincronizado");
     const button = screen.getByRole("button", { name: "Sincronizar agora" });
@@ -48,7 +70,7 @@ describe("interface de sincronização", () => {
     const { SyncStatus } = await import("./SyncStatus");
     let resolveSync!: () => void;
     const onSync = vi.fn(() => new Promise<void>((resolve) => { resolveSync = resolve; }));
-    render(<SyncStatus snapshot={{ status: "synced", enabled: true, available: true, canPush: true, conflictCount: 0 }} onSync={onSync} />);
+    render(<SyncStatus snapshot={syncSnapshot({ status: "synced", enabled: true })} onSync={onSync} />);
     fireEvent.click(screen.getByRole("button", { name: "Sincronizar agora" }));
     const progress = await screen.findByRole("button", { name: "Sincronizando…" });
     expect(progress.hasAttribute("disabled")).toBe(true);
@@ -67,7 +89,7 @@ describe("interface de sincronização", () => {
     vi.resetModules();
     const { SyncStatus } = await import("./SyncStatus");
     const onSync = vi.fn(async () => undefined);
-    render(<SyncStatus snapshot={{ status, enabled: true, available: true, canPush: true, conflictCount: status === "conflicts" ? 1 : 0 }} onSync={onSync} />);
+    render(<SyncStatus snapshot={syncSnapshot({ status, enabled: true, conflictCount: status === "conflicts" ? 1 : 0 })} onSync={onSync} />);
     expect(screen.getByRole("status").textContent).toBe(stateLabel);
     if (actionLabel) {
       fireEvent.click(screen.getByRole("button", { name: actionLabel }));
@@ -78,12 +100,52 @@ describe("interface de sincronização", () => {
     }
   });
 
-  it("mantém a solicitação de exclusão remota disponível com a sincronização desativada", async () => {
+  it("remove a exportação local da sincronização e preserva o Backup local", async () => {
     vi.stubEnv("VITE_SYNC_ENABLED", "true");
     vi.resetModules();
     const manager = { activate: vi.fn(), syncNow: vi.fn(), disable: vi.fn(), refreshStatus: vi.fn(), schedule: vi.fn() } as unknown as SyncManager;
     const { SyncSettingsCard } = await import("./SyncSettingsCard");
-    render(<SyncSettingsCard ownerUid="uid" manager={manager} snapshot={{ status: "disabled", enabled: false, available: true, canPush: false, conflictCount: 0 }} onChanged={vi.fn(async () => undefined)} onError={vi.fn()} onMessage={vi.fn()} />);
+    const { unmount } = render(<SyncSettingsCard ownerUid="uid" manager={manager} snapshot={syncSnapshot({ hasRemoteData: true })} onChanged={vi.fn(async () => undefined)} onError={vi.fn()} onMessage={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Exportar dados locais" })).toBeNull();
+    unmount();
+    const { SettingsView } = await import("./SettingsView");
+    render(<SettingsView user={{ uid: "uid", displayName: "Usuário", email: "user@example.test", photoURL: null }} entitlement={{ status: "admin", hasAccess: true }} onLogout={vi.fn()} onChanged={vi.fn(async () => undefined)} onError={vi.fn()} onMessage={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Exportar JSON" })).toBeTruthy();
+  });
+
+  it("exibe ações de nuvem apenas quando o backend confirma dados remotos, inclusive sem push ativo", async () => {
+    vi.stubEnv("VITE_SYNC_ENABLED", "true");
+    vi.resetModules();
+    const manager = { activate: vi.fn(), syncNow: vi.fn(), disable: vi.fn(), refreshStatus: vi.fn(), schedule: vi.fn() } as unknown as SyncManager;
+    const { SyncSettingsCard } = await import("./SyncSettingsCard");
+    const props = { ownerUid: "uid", manager, onChanged: vi.fn(async () => undefined), onError: vi.fn(), onMessage: vi.fn() };
+    const view = render(<SyncSettingsCard {...props} snapshot={syncSnapshot({ canPush: false, hasRemoteData: false })} />);
+    expect(screen.getByText("Nenhuma cópia financeira está armazenada na nuvem.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Baixar cópia da nuvem" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Excluir dados remotos" })).toBeNull();
+    view.rerender(<SyncSettingsCard {...props} snapshot={syncSnapshot({ canPush: false, hasRemoteData: true })} />);
+    expect(screen.getByRole("button", { name: "Baixar cópia da nuvem" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Excluir dados remotos" })).toBeTruthy();
+  });
+
+  it("baixa a cópia remota e mantém a exclusão forte com seus avisos", async () => {
+    vi.stubEnv("VITE_SYNC_ENABLED", "true");
+    vi.resetModules();
+    const client = await import("../../sync/client");
+    const remote = vi.spyOn(client.syncApi, "exportRemote").mockResolvedValue({ schemaVersion: 4 } as never);
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:test");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    const manager = { activate: vi.fn(), syncNow: vi.fn(), disable: vi.fn(), refreshStatus: vi.fn(), schedule: vi.fn() } as unknown as SyncManager;
+    const onMessage = vi.fn();
+    const { SyncSettingsCard } = await import("./SyncSettingsCard");
+    render(<SyncSettingsCard ownerUid="uid" manager={manager} snapshot={syncSnapshot({ canPush: false, hasRemoteData: true })} onChanged={vi.fn(async () => undefined)} onError={vi.fn()} onMessage={onMessage} />);
+    fireEvent.click(screen.getByRole("button", { name: "Baixar cópia da nuvem" }));
+    await waitFor(() => expect(remote).toHaveBeenCalledWith("uid"));
+    expect(onMessage).toHaveBeenCalledWith("Cópia da nuvem baixada.");
+    fireEvent.click(screen.getByRole("button", { name: "Excluir dados remotos" }));
+    const dialog = screen.getByRole("dialog", { name: "Excluir dados remotos" });
+    expect(within(dialog).getByText(/Conta Google, a assinatura nem registros legais de pagamento/)).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Excluir dados remotos" }).hasAttribute("disabled")).toBe(true);
   });
 });

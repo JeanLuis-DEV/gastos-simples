@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { D1PreparedStatement, Env } from "../types";
-import { isSyncCanaryAllowed, rateLimitSync, requirePublishedSyncPolicy, requirePushEntitlement, requireRecentAuthentication, requireSyncEnabled, syncEntitlement, updateRetention } from "./syncAccess";
+import { hasRemoteFinancialData, isSyncCanaryAllowed, rateLimitSync, requirePublishedSyncPolicy, requirePushEntitlement, requireRecentAuthentication, requireSyncEnabled, syncEntitlement, updateRetention } from "./syncAccess";
 import { SYNC_PRIVACY_POLICY_LABEL } from "../../shared/syncPolicy";
 
-function environment(subscription?: { mp_subscription_id: string | null; status_normalized: string; end_at: string | null }) {
+function environment(subscription?: { mp_subscription_id: string | null; status_normalized: string; end_at: string | null }, hasRemoteData = false) {
   const statements: Array<{ query: string; values: unknown[] }> = [];
   const DB = {
     prepare: vi.fn((query: string) => {
@@ -11,7 +11,7 @@ function environment(subscription?: { mp_subscription_id: string | null; status_
       statements.push(entry);
       return {
         bind(...values: unknown[]) { entry.values = values; return this; },
-        first: vi.fn(async () => query.includes("FROM subscriptions") ? subscription ?? null : query.includes("INSERT INTO rate_limits") ? { count: 1 } : null),
+        first: vi.fn(async () => query.includes("FROM subscriptions") ? subscription ?? null : query.includes("AS has_data") ? { has_data: hasRemoteData ? 1 : 0 } : query.includes("INSERT INTO rate_limits") ? { count: 1 } : null),
         run: vi.fn(async () => ({ success: true })),
         all: vi.fn(async () => ({ success: true, results: [] })),
       } as D1PreparedStatement;
@@ -71,5 +71,10 @@ describe("acesso e retenção da sincronização", () => {
     expect(persisted).not.toContain("firebase-uid-confidencial");
     expect(persisted).not.toContain("203.0.113.10");
     expect(statements.filter(({ query }) => query.includes("INSERT INTO rate_limits"))).toHaveLength(2);
+  });
+
+  it("confirma dados remotos no backend sem inferir pelo estado local", async () => {
+    expect(await hasRemoteFinancialData(environment(undefined, false).env, "uid")).toBe(false);
+    expect(await hasRemoteFinancialData(environment(undefined, true).env, "uid")).toBe(true);
   });
 });

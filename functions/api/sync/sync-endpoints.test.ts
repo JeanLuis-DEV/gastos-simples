@@ -13,6 +13,7 @@ vi.mock("../../_shared/syncAccess", async () => {
     isSyncPolicyPublished: vi.fn(() => true),
     requireSyncCanaryAccess: vi.fn(),
     isSyncCanaryAllowed: vi.fn(() => true),
+    hasRemoteFinancialData: vi.fn(async () => true),
     syncEntitlement: vi.fn(async () => "active"),
     updateRetention: vi.fn(),
   };
@@ -87,7 +88,7 @@ describe("endpoints de sincronização", () => {
     expect((await activate(context("false", { protocolVersion: 1, deviceId: "device", consentVersion: SYNC_PRIVACY_POLICY_VERSION }, "/api/sync/activate", "POST"))).status).toBe(503);
     expect((await pull(context("false", undefined, "/api/sync/pull?cursor=0&limit=1&epoch=1&deviceId=device&protocolVersion=1", "GET"))).status).toBe(503);
     const statusResponse = await status(context("false", undefined, "/api/sync/status", "GET"));
-    expect(await statusResponse.json()).toMatchObject({ available: false, canExport: true, canDelete: true });
+    expect(await statusResponse.json()).toMatchObject({ available: false, canExport: true, canDelete: true, hasRemoteData: true });
     const disableResponse = await disable(context("false", { deleteRemoteData: true }, "/api/sync/disable", "POST"));
     expect(await disableResponse.json()).toEqual({ enabled: false, deletionRequired: true });
   });

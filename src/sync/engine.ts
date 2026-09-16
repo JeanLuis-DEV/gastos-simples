@@ -32,12 +32,15 @@ export type SyncSnapshot = {
   enabled: boolean;
   available: boolean;
   canPush: boolean;
+  canExport: boolean;
+  canDelete: boolean;
+  hasRemoteData: boolean;
   lastSyncedAt?: string;
   error?: string;
   conflictCount: number;
 };
 
-const initialSnapshot: SyncSnapshot = { status: "disabled", enabled: false, available: false, canPush: false, conflictCount: 0 };
+const initialSnapshot: SyncSnapshot = { status: "disabled", enabled: false, available: false, canPush: false, canExport: false, canDelete: false, hasRemoteData: false, conflictCount: 0 };
 
 function messageFor(error: unknown) {
   if (!navigator.onLine) return "Sem conexão. As alterações continuam salvas neste dispositivo.";
@@ -265,7 +268,7 @@ export class SyncManager {
       const remote = await syncApi.status();
       const local = await getSyncState(this.ownerUid);
       if (remote.canPush) await recordSuccessfulEntitlement(this.ownerUid, remote.serverTime);
-      this.publish({ available: remote.available, enabled: local.enabled && remote.enabled, canPush: remote.canPush, lastSyncedAt: local.lastSyncedAt, status: local.enabled && remote.enabled ? "synced" : "disabled", error: undefined });
+      this.publish({ available: remote.available, enabled: local.enabled && remote.enabled, canPush: remote.canPush, canExport: remote.canExport, canDelete: remote.canDelete, hasRemoteData: remote.hasRemoteData, lastSyncedAt: local.lastSyncedAt, status: local.enabled && remote.enabled ? "synced" : "disabled", error: undefined });
       return remote;
     } catch (error) {
       this.publish({ status: navigator.onLine ? "error" : "offline", error: messageFor(error) });
@@ -373,7 +376,7 @@ export class SyncManager {
         await updateSyncState(this.ownerUid, { lastSyncedAt: completedAt, lastError: undefined });
         this.failures = 0;
         this.lastSuccessfulSyncAt = Date.now();
-        this.publish({ enabled: true, available: true, canPush: status.canPush, lastSyncedAt: completedAt, conflictCount: conflicts.length, status: conflicts.length ? "conflicts" : "synced" });
+        this.publish({ enabled: true, available: true, canPush: status.canPush, canExport: refreshed.canExport, canDelete: refreshed.canDelete, hasRemoteData: refreshed.hasRemoteData, lastSyncedAt: completedAt, conflictCount: conflicts.length, status: conflicts.length ? "conflicts" : "synced" });
       } catch (error) {
         if (error instanceof SyncHttpError && error.code === "resync_required") await prepareFullResync(this.ownerUid);
         this.failures += 1;

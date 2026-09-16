@@ -2,7 +2,7 @@ import { Alert, Button, Card, Modal } from "@apps-simples/ui";
 import { useEffect, useState } from "react";
 import { localCivilDate } from "../../domain/dates";
 import { reauthenticateWithGoogle } from "../../services/auth";
-import { exportBackup, listSyncConflicts, resolveSyncConflict } from "../../storage/database";
+import { listSyncConflicts, resolveSyncConflict } from "../../storage/database";
 import { syncApi } from "../../sync/client";
 import { canUseRemoteSync, SYNC_PRIVACY_POLICY_URL } from "../../sync/config";
 import type { SyncManager, SyncSnapshot } from "../../sync/engine";
@@ -35,7 +35,7 @@ export function SyncSettingsCard({ ownerUid, manager, snapshot, onChanged, onErr
   const [conflicts, setConflicts] = useState<SyncConflict[]>([]);
   const refreshConflicts = () => listSyncConflicts(ownerUid).then(setConflicts);
   useEffect(() => { void refreshConflicts(); }, [ownerUid, snapshot.conflictCount]);
-  if (!canUseRemoteSync()) return null;
+  if (!canUseRemoteSync() || !snapshot.available) return null;
 
   const run = async (action: () => Promise<void>) => {
     if (busy) return;
@@ -45,13 +45,9 @@ export function SyncSettingsCard({ ownerUid, manager, snapshot, onChanged, onErr
     finally { setBusy(false); }
   };
 
-  const exportLocal = () => run(async () => {
-    downloadJson(`gastos-simples-backup-${localCivilDate()}.json`, await exportBackup(ownerUid));
-    onMessage("Backup local exportado.");
-  });
   const exportRemote = () => run(async () => {
     downloadJson(`gastos-simples-remoto-${localCivilDate()}.json`, await syncApi.exportRemote(ownerUid));
-    onMessage("Cópia remota exportada.");
+    onMessage("Cópia da nuvem baixada.");
   });
   const deleteRemote = () => run(async () => {
     await reauthenticateWithGoogle();
@@ -77,14 +73,20 @@ export function SyncSettingsCard({ ownerUid, manager, snapshot, onChanged, onErr
       {snapshot.error && <Alert type="error">{snapshot.error}</Alert>}
       <div className="button-row">
         {!snapshot.enabled ? <Button onClick={() => setConsentOpen(true)} disabled={busy || !snapshot.available}>Ativar sincronização</Button> : <Button onClick={() => void manager.syncNow()} disabled={busy || snapshot.status === "syncing"}>Sincronizar agora</Button>}
-        <Button variant="secondary" onClick={() => void exportLocal()} disabled={busy}>Exportar dados locais</Button>
-        <Button variant="secondary" onClick={() => void exportRemote()} disabled={busy}>Exportar dados remotos</Button>
       </div>
       <div className="button-row sync-danger-actions">
         {snapshot.enabled && <Button variant="secondary" onClick={() => void run(async () => { await manager.disable(false); onMessage("Sincronização desativada. A cópia remota foi mantida."); })} disabled={busy}>Desativar e manter dados remotos</Button>}
-        <Button variant="danger" onClick={() => setDeleteOpen(true)} disabled={busy}>Excluir dados remotos</Button>
       </div>
-      <p className="settings-note">Excluir os dados remotos não exclui os dados locais, a Conta Google, a assinatura nem registros legais de pagamento. Snapshots técnicos do provedor podem seguir os prazos próprios de retenção.</p>
+      <section className="sync-cloud-data" aria-labelledby="sync-cloud-data-title">
+        <h3 id="sync-cloud-data-title">Dados armazenados na nuvem</h3>
+        {snapshot.hasRemoteData ? <>
+          <div className="button-row">
+            {snapshot.canExport && <Button variant="secondary" onClick={() => void exportRemote()} disabled={busy}>Baixar cópia da nuvem</Button>}
+            {snapshot.canDelete && <Button variant="danger" onClick={() => setDeleteOpen(true)} disabled={busy}>Excluir dados remotos</Button>}
+          </div>
+          <p className="settings-note">Excluir os dados remotos não exclui os dados locais, a Conta Google, a assinatura nem registros legais de pagamento. Snapshots técnicos do provedor podem seguir os prazos próprios de retenção.</p>
+        </> : <p className="settings-note">Nenhuma cópia financeira está armazenada na nuvem.</p>}
+      </section>
       {conflicts.length > 0 && <section aria-labelledby="sync-conflicts-title">
         <h3 id="sync-conflicts-title">Conflitos pendentes</h3>
         {conflicts.map((conflict) => <div className="sync-conflict" key={conflict.id}>
@@ -102,7 +104,7 @@ export function SyncSettingsCard({ ownerUid, manager, snapshot, onChanged, onErr
         <label className="sync-consent"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /> Li as informações e quero ativar a sincronização.</label>
       </Modal>
       <Modal open={deleteOpen} onClose={() => { if (!busy) { setDeleteOpen(false); setConfirmation(""); } }} title="Excluir dados remotos" footer={<div className="button-row"><Button variant="secondary" onClick={() => setDeleteOpen(false)} disabled={busy}>Cancelar</Button><Button variant="danger" onClick={() => void deleteRemote()} disabled={busy || confirmation !== "EXCLUIR"}>Excluir dados remotos</Button></div>}>
-        <p>Exporte seus dados antes de continuar, se desejar. Esta ação não apaga os dados deste navegador.</p>
+        <p>Baixe uma cópia da nuvem antes de continuar, se desejar. Esta ação não apaga os dados deste navegador, a Conta Google, a assinatura nem registros legais de pagamento.</p>
         <label>Digite <strong>EXCLUIR</strong> para confirmar<input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" /></label>
       </Modal>
     </Card>
