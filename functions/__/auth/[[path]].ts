@@ -1,7 +1,14 @@
-const FIREBASE_AUTH_ORIGIN = "https://gastos-simples-8bd4e.firebaseapp.com";
+const DEFAULT_FIREBASE_PROJECT_ID = "gastos-simples-8bd4e";
 const AUTH_PATH_PREFIX = "/__/auth/";
 
-type AuthProxyContext = { request: Request };
+type AuthProxyContext = { request: Request; env?: { FIREBASE_PROJECT_ID?: string } };
+
+function firebaseAuthOrigin(projectId?: string) {
+  const normalized = projectId?.trim() || DEFAULT_FIREBASE_PROJECT_ID;
+  if (!/^[a-z0-9][a-z0-9-]{4,28}[a-z0-9]$/.test(normalized))
+    throw new Error("Projeto Firebase inválido.");
+  return `https://${normalized}.firebaseapp.com`;
+}
 
 function proxyError(status: number, message: string) {
   return new Response(message, {
@@ -18,7 +25,7 @@ function proxyError(status: number, message: string) {
   });
 }
 
-function firebaseAuthUrl(request: Request) {
+function firebaseAuthUrl(request: Request, projectId?: string) {
   const source = new URL(request.url);
   if (!source.pathname.startsWith(AUTH_PATH_PREFIX))
     throw new Error("Caminho inválido.");
@@ -41,7 +48,7 @@ function firebaseAuthUrl(request: Request) {
   )
     throw new Error("Caminho inválido.");
 
-  const target = new URL(FIREBASE_AUTH_ORIGIN);
+  const target = new URL(firebaseAuthOrigin(projectId));
   target.pathname = source.pathname;
   target.search = source.search;
   return target;
@@ -54,7 +61,7 @@ export async function onRequest(context: AuthProxyContext) {
 
   let target: URL;
   try {
-    target = firebaseAuthUrl(request);
+    target = firebaseAuthUrl(request, context.env?.FIREBASE_PROJECT_ID);
   } catch {
     return proxyError(400, "Solicitação inválida.");
   }

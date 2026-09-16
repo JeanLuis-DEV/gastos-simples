@@ -4,11 +4,11 @@ import { localCivilDate } from "../../domain/dates";
 import { reauthenticateWithGoogle } from "../../services/auth";
 import { exportBackup, listSyncConflicts, resolveSyncConflict } from "../../storage/database";
 import { syncApi } from "../../sync/client";
-import { canUseRemoteSync } from "../../sync/config";
+import { canUseRemoteSync, SYNC_PRIVACY_POLICY_URL } from "../../sync/config";
 import type { SyncManager, SyncSnapshot } from "../../sync/engine";
 import type { SyncConflict } from "../../sync/types";
+import { SYNC_PRIVACY_POLICY_VERSION } from "../../../shared/syncPolicy";
 
-const privacyUrl = "https://jeanluis-dev.github.io/Central-de-Privacidade/apps/gastos-simples.html";
 
 function downloadJson(name: string, value: unknown) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }));
@@ -96,10 +96,10 @@ export function SyncSettingsCard({ ownerUid, manager, snapshot, onChanged, onErr
           </div>
         </div>)}
       </section>}
-      <Modal open={consentOpen} onClose={() => { if (!busy) { setConsentOpen(false); setConsent(false); } }} title="Ativar sincronização" footer={<div className="button-row"><Button variant="secondary" onClick={() => setConsentOpen(false)} disabled={busy}>Agora não</Button><Button disabled={!consent || busy} onClick={() => void run(async () => { await manager.activate(1); setConsentOpen(false); setConsent(false); onMessage("Sincronização ativada."); })}>Ativar sincronização</Button></div>}>
+      <Modal open={consentOpen} onClose={() => { if (!busy) { setConsentOpen(false); setConsent(false); } }} title="Ativar sincronização" footer={<div className="button-row"><Button variant="secondary" onClick={() => setConsentOpen(false)} disabled={busy}>Agora não</Button><Button disabled={!consent || busy} onClick={() => void run(async () => { await manager.activate(SYNC_PRIVACY_POLICY_VERSION); setConsentOpen(false); setConsent(false); onMessage("Sincronização ativada."); })}>Ativar sincronização</Button></div>}>
         <p>Lançamentos, séries, parcelas, perfis, categorias e os 100 cálculos mais recentes serão enviados com segurança para a Cloudflare e poderão aparecer nos seus outros dispositivos.</p>
         <p>O aplicativo continuará funcionando offline. Você poderá exportar, desativar a sincronização ou solicitar a exclusão definitiva da cópia remota.</p>
-        <p><a href={privacyUrl} target="_blank" rel="noreferrer">Ler a Política de Privacidade</a></p>
+        <p><a href={SYNC_PRIVACY_POLICY_URL} target="_blank" rel="noreferrer">Ler a Política de Privacidade</a></p>
         <label className="sync-consent"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /> Li as informações e quero ativar a sincronização.</label>
       </Modal>
       <Modal open={deleteOpen} onClose={() => { if (!busy) { setDeleteOpen(false); setConfirmation(""); } }} title="Excluir dados remotos" footer={<div className="button-row"><Button variant="secondary" onClick={() => setDeleteOpen(false)} disabled={busy}>Cancelar</Button><Button variant="danger" onClick={() => void deleteRemote()} disabled={busy || confirmation !== "EXCLUIR"}>Excluir dados remotos</Button></div>}>

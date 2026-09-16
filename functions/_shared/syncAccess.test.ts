@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { D1PreparedStatement, Env } from "../types";
-import { rateLimitSync, requirePushEntitlement, requireRecentAuthentication, requireSyncEnabled, syncEntitlement, updateRetention } from "./syncAccess";
+import { isSyncCanaryAllowed, rateLimitSync, requirePublishedSyncPolicy, requirePushEntitlement, requireRecentAuthentication, requireSyncEnabled, syncEntitlement, updateRetention } from "./syncAccess";
+import { SYNC_PRIVACY_POLICY_LABEL } from "../../shared/syncPolicy";
 
 function environment(subscription?: { mp_subscription_id: string | null; status_normalized: string; end_at: string | null }) {
   const statements: Array<{ query: string; values: unknown[] }> = [];
@@ -24,6 +25,18 @@ describe("acesso e retenção da sincronização", () => {
   it("mantém o kill switch fechado salvo valor literal true", () => {
     expect(() => requireSyncEnabled({ SYNC_ENABLED: "false" } as Env)).toThrow();
     expect(() => requireSyncEnabled({ SYNC_ENABLED: "true" } as Env)).not.toThrow();
+  });
+
+  it("bloqueia escrita enquanto a versão pública esperada não estiver configurada", () => {
+    expect(() => requirePublishedSyncPolicy({ SYNC_POLICY_VERSION: "pending" } as Env)).toThrow();
+    expect(() => requirePublishedSyncPolicy({ SYNC_POLICY_VERSION: SYNC_PRIVACY_POLICY_LABEL } as Env)).not.toThrow();
+  });
+
+  it("restringe o canário ao UID administrativo sem versionar identificadores", () => {
+    const env = { SYNC_CANARY_ADMIN_ONLY: "true", ADMIN_FIREBASE_UIDS: "uid-admin" } as Env;
+    expect(isSyncCanaryAllowed("uid-admin", env)).toBe(true);
+    expect(isSyncCanaryAllowed("uid-comum", env)).toBe(false);
+    expect(isSyncCanaryAllowed("uid-comum", { ...env, SYNC_CANARY_ADMIN_ONLY: "false" })).toBe(true);
   });
 
   it.each(["trial", "active"])("permite push para %s", async (status) => {

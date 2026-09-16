@@ -557,6 +557,34 @@ export async function replaceSyncState(ownerUid: string, changes: Partial<Omit<S
   return next;
 }
 
+export async function prepareFullResync(ownerUid: string) {
+  const db = await openDatabase();
+  const tx = db.transaction([...Object.values(storeByEntity), "syncOutbox", "syncState", "syncBaseSnapshots", "syncConflicts"], "readwrite");
+  const outboxStore = tx.objectStore("syncOutbox");
+  const pending = await result<OutboxEntry[]>(outboxStore.index("ownerUid").getAll(ownerUid));
+  const pendingKeys = new Set(pending.map((entry) => `${entry.entityType}:${entry.recordId}`));
+  for (const [entityType, storeName] of Object.entries(storeByEntity) as Array<[SyncEntityType, Exclude<StoreName, "preferences">]>) {
+    const store = tx.objectStore(storeName);
+    const records = await result<SyncPayload[]>(store.index("ownerUid").getAll(ownerUid));
+    for (const record of records) {
+      const pendingKey = pendingKeys.has(`${entityType}:${record.id}`);
+      if ((record.serverVersion ?? 0) > 0 && !pendingKey) store.delete(record.id);
+      else if (pendingKey) store.put({ ...record, serverVersion: 0, serverRevision: undefined });
+    }
+  }
+  for (const entry of pending) outboxStore.put({ ...entry, baseVersion: 0, baseSnapshot: undefined });
+  for (const storeName of ["syncBaseSnapshots", "syncConflicts"] as const) {
+    const store = tx.objectStore(storeName);
+    const items = await result<Array<{ id: string }>>(store.index("ownerUid").getAll(ownerUid));
+    items.forEach((item) => store.delete(item.id));
+  }
+  const stateStore = tx.objectStore("syncState");
+  const state = await result<SyncState | undefined>(stateStore.get(ownerUid));
+  if (!state) throw new Error("Estado de sincronização inexistente.");
+  stateStore.put({ ...state, cursor: 0 });
+  await done(tx, "Não foi possível preparar a atualização completa dos dados.");
+}
+
 const storeByEntity: Record<SyncEntityType, Exclude<StoreName, "preferences">> = {
   transaction: "transactions",
   category: "categories",

@@ -399,7 +399,7 @@ async function pushReplacement(
     env.DB.prepare("INSERT INTO sync_write_guards (firebase_uid,request_id,valid) SELECT ?,?,CASE WHEN EXISTS(SELECT 1 FROM sync_accounts WHERE firebase_uid=? AND sync_epoch=? AND revision=? AND activated_at IS NOT NULL AND disabled_at IS NULL) THEN 1 ELSE 0 END").bind(identity.uid, guardId, identity.uid, account.sync_epoch, account.revision),
     ...financialDeleteStatements(env, identity.uid),
     ...await recordWriteStatements(env, identity.uid, [...planned.values()], now),
-    env.DB.prepare("UPDATE sync_accounts SET sync_epoch=?,revision=?,updated_at=? WHERE firebase_uid=?").bind(nextEpoch, planned.size, now, identity.uid),
+    env.DB.prepare("UPDATE sync_accounts SET sync_epoch=?,revision=?,min_available_revision=0,updated_at=? WHERE firebase_uid=?").bind(nextEpoch, planned.size, now, identity.uid),
     env.DB.prepare("INSERT INTO sync_devices (firebase_uid,device_id,protocol_version,created_at,last_seen_at) VALUES (?,?,?,?,?)").bind(identity.uid, body.deviceId, body.protocolVersion, now, now),
     env.DB.prepare("INSERT INTO sync_batches (firebase_uid,batch_id,content_hash,response_json,created_at) VALUES (?,?,?,?,?)").bind(identity.uid, body.batchId, batchHash, canonicalJson(response), now),
     env.DB.prepare("INSERT INTO sync_mutation_receipts (firebase_uid,mutation_id,batch_id,content_hash,result_json,created_at) VALUES (?,?,?,?,?,?)").bind(identity.uid, operation.mutationId, body.batchId, await contentHash(operation), canonicalJson(result), now),
@@ -507,15 +507,13 @@ export async function pushSync(env: Env, identity: AuthIdentity, body: PushReque
 }
 
 export async function pullSync(env: Env, ownerUid: string, input: { cursor: number; untilRevision?: number; limit: number; epoch: number; deviceId: string; protocolVersion: number }) {
-  const account = await env.DB.prepare("SELECT sync_epoch,revision,activated_at,disabled_at FROM sync_accounts WHERE firebase_uid=?")
-    .bind(ownerUid).first<{ sync_epoch: number; revision: number; activated_at: string | null; disabled_at: string | null }>();
+  const account = await env.DB.prepare("SELECT sync_epoch,revision,min_available_revision,activated_at,disabled_at FROM sync_accounts WHERE firebase_uid=?")
+    .bind(ownerUid).first<{ sync_epoch: number; revision: number; min_available_revision: number; activated_at: string | null; disabled_at: string | null }>();
   if (!account?.activated_at || account.disabled_at) throw new HttpError(409, "A sincronização não está ativa.");
   if (account.sync_epoch !== input.epoch) throw new HttpError(410, "resync_required");
   const highWatermark = input.untilRevision ?? account.revision;
   if (highWatermark < input.cursor || highWatermark > account.revision) throw new HttpError(400, "Cursor de sincronização inválido.");
-  const minimum = await env.DB.prepare("SELECT MIN(revision) AS minimum FROM sync_changes WHERE firebase_uid=?")
-    .bind(ownerUid).first<{ minimum: number | null }>();
-  if (input.cursor > 0 && minimum?.minimum && input.cursor < minimum.minimum - 1) throw new HttpError(410, "resync_required");
+  if (input.cursor > 0 && input.cursor < account.min_available_revision) throw new HttpError(410, "resync_required");
   const changes = await env.DB.prepare("SELECT revision,entity_type,record_id,version,is_deleted,deleted_at,payload_ciphertext,payload_iv,key_id FROM sync_changes WHERE firebase_uid=? AND revision>? AND revision<=? ORDER BY revision LIMIT ?")
     .bind(ownerUid, input.cursor, highWatermark, input.limit).all<{ revision: number; entity_type: SyncEntityType; record_id: string; version: number; is_deleted: number; deleted_at: string | null; payload_ciphertext: string; payload_iv: string; key_id: string }>();
   const records: Array<Record<string, unknown>> = [];
@@ -532,10 +530,12 @@ export async function pullSync(env: Env, ownerUid: string, input: { cursor: numb
     records.push(candidate);
     nextCursor = change.revision;
   }
+  const fetched = changes.results ?? [];
+  if (records.length === fetched.length && fetched.length < input.limit) nextCursor = highWatermark;
   const now = new Date().toISOString();
   await env.DB.prepare("INSERT INTO sync_devices (firebase_uid,device_id,protocol_version,created_at,last_seen_at) VALUES (?,?,?,?,?) ON CONFLICT(firebase_uid,device_id) DO UPDATE SET protocol_version=excluded.protocol_version,last_seen_at=excluded.last_seen_at")
     .bind(ownerUid, input.deviceId, input.protocolVersion, now, now).run();
-  return { protocolVersion: 1, syncEpoch: account.sync_epoch, highWatermark, cursor: nextCursor, hasMore: nextCursor < highWatermark, serverTime: now, records };
+  return { protocolVersion: 1, syncEpoch: account.sync_epoch, highWatermark, cursor: nextCursor, hasMore: nextCursor < highWatermark, minAvailableRevision: account.min_available_revision, serverTime: now, records };
 }
 
 export async function exportRemoteData(env: Env, ownerUid: string, input: { cursor: number; untilRevision?: number; limit: number }) {
@@ -553,6 +553,7 @@ export async function exportRemoteData(env: Env, ownerUid: string, input: { curs
     records.push({ entityType: row.entity_type, recordId: row.record_id, version: row.version, revision: row.revision, isDeleted: row.is_deleted === 1, deletedAt: row.deleted_at ?? undefined, payload });
     cursor = row.revision;
   }
+  if ((rows.results?.length ?? 0) < input.limit) cursor = highWatermark;
   return { schemaVersion: 1, exportedAt: new Date().toISOString(), syncEpoch: account?.sync_epoch ?? 1, highWatermark, cursor, hasMore: cursor < highWatermark, records };
 }
 
@@ -583,7 +584,7 @@ export async function deleteFinancialData(
   ];
   for (const table of ["sync_import_chunks", "sync_import_records", "sync_import_sessions", "sync_mutation_receipts", "sync_batches", "sync_changes", "sync_tombstones", "sync_record_aliases", "sync_base_snapshots", "sync_conflicts", "sync_devices", "sync_series_segments", "sync_transactions", "sync_calculator_entries", "sync_series", "sync_categories", "sync_profiles", "sync_retention", "sync_deletion_nonces"])
     statements.push(env.DB.prepare(`DELETE FROM ${table} WHERE firebase_uid=?`).bind(ownerUid));
-  statements.push(env.DB.prepare("UPDATE sync_accounts SET sync_epoch=?,revision=0,activated_at=NULL,disabled_at=?,updated_at=? WHERE firebase_uid=? AND sync_epoch=?")
+  statements.push(env.DB.prepare("UPDATE sync_accounts SET sync_epoch=?,revision=0,min_available_revision=0,activated_at=NULL,disabled_at=?,updated_at=? WHERE firebase_uid=? AND sync_epoch=?")
     .bind(nextEpoch, timestamp, timestamp, ownerUid, expectedEpoch));
   statements.push(env.DB.prepare("INSERT INTO sync_deletion_requests (firebase_uid,request_id,requested_at,completed_at,resulting_epoch) VALUES (?,?,?,?,?)")
     .bind(ownerUid, requestId, timestamp, timestamp, nextEpoch));

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SyncManager } from "../../sync/engine";
+import { SYNC_PRIVACY_POLICY_VERSION } from "../../../shared/syncPolicy";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -22,7 +23,7 @@ describe("interface de sincronização", () => {
     expect(buttons.at(-1)?.hasAttribute("disabled")).toBe(true);
     fireEvent.click(checkbox);
     fireEvent.click(buttons.at(-1)!);
-    await waitFor(() => expect(activate).toHaveBeenCalledWith(1));
+    await waitFor(() => expect(activate).toHaveBeenCalledWith(SYNC_PRIVACY_POLICY_VERSION));
   });
 
   it("expõe estado por texto e bloqueia sincronização repetida", async () => {

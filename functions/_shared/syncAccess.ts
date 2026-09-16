@@ -5,11 +5,28 @@ import { getSubscription, persistSubscription } from "./mercadoPago";
 import type { AuthIdentity, Env } from "../types";
 import { contentHash } from "./syncCrypto";
 import { rateLimit } from "./rateLimit";
+import { SYNC_PRIVACY_POLICY_LABEL } from "../../shared/syncPolicy";
 
 export type SyncEntitlement = "admin" | "trial" | "active" | "paused" | "cancelled" | "expired" | "none" | "other";
 
 export function requireSyncEnabled(env: Env) {
   if (env.SYNC_ENABLED !== "true") throw new HttpError(503, "Sincronização indisponível.");
+}
+
+export function isSyncPolicyPublished(env: Env) {
+  return env.SYNC_POLICY_VERSION === SYNC_PRIVACY_POLICY_LABEL;
+}
+
+export function requirePublishedSyncPolicy(env: Env) {
+  if (!isSyncPolicyPublished(env)) throw new HttpError(503, "Sincronização indisponível.");
+}
+
+export function isSyncCanaryAllowed(ownerUid: string, env: Env) {
+  return env.SYNC_CANARY_ADMIN_ONLY !== "true" || hasAdministrativeAccess(ownerUid, env.ADMIN_FIREBASE_UIDS);
+}
+
+export function requireSyncCanaryAccess(ownerUid: string, env: Env) {
+  if (!isSyncCanaryAllowed(ownerUid, env)) throw new HttpError(403, "Sincronização indisponível para esta conta.");
 }
 
 export async function syncEntitlement(identity: AuthIdentity, env: Env, refreshProvider = false): Promise<SyncEntitlement> {
@@ -40,9 +57,9 @@ export async function ensureSyncAccount(identity: AuthIdentity, env: Env) {
   await env.DB.prepare(
     "INSERT INTO sync_accounts (firebase_uid,sync_epoch,revision,created_at,updated_at) VALUES (?,1,0,?,?) ON CONFLICT(firebase_uid) DO NOTHING",
   ).bind(identity.uid, now, now).run();
-  return env.DB.prepare("SELECT sync_epoch,revision,activated_at,disabled_at FROM sync_accounts WHERE firebase_uid=?")
+  return env.DB.prepare("SELECT sync_epoch,revision,min_available_revision,activated_at,disabled_at FROM sync_accounts WHERE firebase_uid=?")
     .bind(identity.uid)
-    .first<{ sync_epoch: number; revision: number; activated_at: string | null; disabled_at: string | null }>();
+    .first<{ sync_epoch: number; revision: number; min_available_revision: number; activated_at: string | null; disabled_at: string | null }>();
 }
 
 export async function updateRetention(env: Env, ownerUid: string, status: SyncEntitlement) {

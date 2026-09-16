@@ -6,6 +6,7 @@ import {
   getSyncState,
   listOutbox,
   listSyncConflicts,
+  prepareFullResync,
   replaceSyncState,
   updateSyncState,
 } from "../storage/database";
@@ -14,6 +15,7 @@ import { canUseRemoteSync } from "./config";
 import { payloadForServer } from "./serialization";
 import type { OutboxEntry, SyncUiStatus } from "./types";
 import type { Backup } from "../storage/database";
+import { SYNC_PRIVACY_POLICY_VERSION } from "../../shared/syncPolicy";
 
 const LEASE_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_PUSH_BYTES = 256 * 1024;
@@ -211,11 +213,11 @@ export class SyncManager {
     }
   }
 
-  async activate(consentVersion = 1) {
+  async activate(consentVersion = SYNC_PRIVACY_POLICY_VERSION) {
     if (!canUseRemoteSync()) throw new Error("A sincronização ainda não está disponível.");
     const state = await getSyncState(this.ownerUid);
     const remote = await syncApi.activate(state.deviceId, consentVersion);
-    await replaceSyncState(this.ownerUid, { enabled: true, consentVersion, epoch: remote.syncEpoch, cursor: 0, lastError: undefined });
+    await replaceSyncState(this.ownerUid, { enabled: true, consentVersion, consentAcceptedAt: remote.consentAcceptedAt, epoch: remote.syncEpoch, cursor: 0, lastError: undefined });
     await recordSuccessfulEntitlement(this.ownerUid);
     this.publish({ enabled: true, available: true, canPush: true, status: "syncing" });
     await this.syncNow();
@@ -278,7 +280,7 @@ export class SyncManager {
         this.failures = 0;
         this.publish({ enabled: true, available: true, canPush: status.canPush, lastSyncedAt: completedAt, conflictCount: conflicts.length, status: conflicts.length ? "conflicts" : "synced" });
       } catch (error) {
-        if (error instanceof SyncHttpError && error.code === "resync_required") await replaceSyncState(this.ownerUid, { cursor: 0 });
+        if (error instanceof SyncHttpError && error.code === "resync_required") await prepareFullResync(this.ownerUid);
         this.failures += 1;
         const errorMessage = messageFor(error);
         await updateSyncState(this.ownerUid, { lastError: errorMessage });

@@ -24,6 +24,8 @@ export type Env = {
   MERCADO_PAGO_WEBHOOK_SECRET?: string;
   APP_ORIGIN: string;
   SYNC_ENABLED?: string;
+  SYNC_POLICY_VERSION?: string;
+  SYNC_CANARY_ADMIN_ONLY?: string;
   SYNC_ACTIVE_KEY_ID?: string;
   SYNC_ENCRYPTION_KEYS?: string;
 };

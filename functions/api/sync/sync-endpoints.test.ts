@@ -9,6 +9,10 @@ vi.mock("../../_shared/syncAccess", async () => {
     rateLimitSync: vi.fn(),
     requirePushEntitlement: vi.fn(),
     requireSyncEnabled: vi.fn((env: { SYNC_ENABLED?: string }) => { if (env.SYNC_ENABLED !== "true") throw new HttpError(503, "Sincronização indisponível."); }),
+    requirePublishedSyncPolicy: vi.fn(),
+    isSyncPolicyPublished: vi.fn(() => true),
+    requireSyncCanaryAccess: vi.fn(),
+    isSyncCanaryAllowed: vi.fn(() => true),
     syncEntitlement: vi.fn(async () => "active"),
     updateRetention: vi.fn(),
   };
@@ -26,6 +30,7 @@ import { onRequestPost as disable } from "./disable";
 import { onRequestGet as pull } from "./pull";
 import { onRequestPost as push } from "./push";
 import { onRequestGet as status } from "./status";
+import { SYNC_PRIVACY_POLICY_LABEL, SYNC_PRIVACY_POLICY_VERSION } from "../../../shared/syncPolicy";
 
 const mockedAuthenticate = vi.mocked(authenticate);
 const mockedPush = vi.mocked(pushSync);
@@ -42,7 +47,7 @@ function context(syncEnabled = "true", value: unknown = body, path = "/api/sync/
     request: new Request(`https://app.test${path}`, { method, headers: method === "POST" ? { "Content-Type": "application/json" } : undefined, body: method === "POST" ? JSON.stringify(value) : undefined }),
     env: {
       DB: { prepare: vi.fn(() => statement), batch: vi.fn(async () => []) },
-      APP_ORIGIN: "https://app.test", FIREBASE_PROJECT_ID: "project", MERCADO_PAGO_ACCESS_TOKEN: "fixture", MERCADO_PAGO_PLAN_ID: "fixture", SYNC_ENABLED: syncEnabled,
+      APP_ORIGIN: "https://app.test", FIREBASE_PROJECT_ID: "project", MERCADO_PAGO_ACCESS_TOKEN: "fixture", MERCADO_PAGO_PLAN_ID: "fixture", SYNC_ENABLED: syncEnabled, SYNC_POLICY_VERSION: SYNC_PRIVACY_POLICY_LABEL,
     } as Env,
     waitUntil: vi.fn(),
   };
@@ -79,7 +84,7 @@ describe("endpoints de sincronização", () => {
   });
 
   it("mantém activate e pull fechados, mas status e disable disponíveis", async () => {
-    expect((await activate(context("false", { protocolVersion: 1, deviceId: "device", consentVersion: 1 }, "/api/sync/activate", "POST"))).status).toBe(503);
+    expect((await activate(context("false", { protocolVersion: 1, deviceId: "device", consentVersion: SYNC_PRIVACY_POLICY_VERSION }, "/api/sync/activate", "POST"))).status).toBe(503);
     expect((await pull(context("false", undefined, "/api/sync/pull?cursor=0&limit=1&epoch=1&deviceId=device&protocolVersion=1", "GET"))).status).toBe(503);
     const statusResponse = await status(context("false", undefined, "/api/sync/status", "GET"));
     expect(await statusResponse.json()).toMatchObject({ available: false, canExport: true, canDelete: true });
@@ -88,9 +93,9 @@ describe("endpoints de sincronização", () => {
   });
 
   it("ativa somente com consentimento e versão de protocolo explícitos", async () => {
-    const validResponse = await activate(context("true", { protocolVersion: 1, deviceId: "device", consentVersion: 1 }, "/api/sync/activate", "POST"));
+    const validResponse = await activate(context("true", { protocolVersion: 1, deviceId: "device", consentVersion: SYNC_PRIVACY_POLICY_VERSION }, "/api/sync/activate", "POST"));
     expect(validResponse.status).toBe(200);
-    const invalidResponse = await activate(context("true", { protocolVersion: 1, deviceId: "device", consentVersion: 1, ownerUid: "other" }, "/api/sync/activate", "POST"));
+    const invalidResponse = await activate(context("true", { protocolVersion: 1, deviceId: "device", consentVersion: SYNC_PRIVACY_POLICY_VERSION, ownerUid: "other" }, "/api/sync/activate", "POST"));
     expect(invalidResponse.status).toBe(400);
   });
 });

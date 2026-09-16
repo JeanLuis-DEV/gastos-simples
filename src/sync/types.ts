@@ -50,6 +50,7 @@ export type SyncState = {
   enabled: boolean;
   lastSyncedAt?: string;
   consentVersion?: number;
+  consentAcceptedAt?: string;
   leaseValidatedAt?: string;
   leaseDeadlineMs?: number;
   leaseObservedWallMs?: number;

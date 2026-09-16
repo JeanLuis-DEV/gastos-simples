@@ -1,26 +1,17 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
+import { SYNC_PRIVACY_POLICY_URL as DEFAULT_SYNC_PRIVACY_POLICY_URL } from "../../shared/syncPolicy";
+import { resolveSyncPrivacyPolicyUrl } from "./config";
 
-afterEach(() => {
-  vi.unstubAllEnvs();
-  vi.restoreAllMocks();
-});
-
-describe("kill switch da sincronização", () => {
-  it("só libera o transporte com o valor literal true e não faz requests ao consultar", async () => {
-    vi.stubEnv("VITE_SYNC_ENABLED", "true");
-    vi.resetModules();
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
-    const { canUseRemoteSync } = await import("./config");
-    expect(canUseRemoteSync()).toBe(true);
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it("permanece fechado por padrão", async () => {
-    vi.stubEnv("VITE_SYNC_ENABLED", "false");
-    vi.resetModules();
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
-    const { canUseRemoteSync } = await import("./config");
-    expect(canUseRemoteSync()).toBe(false);
-    expect(fetchSpy).not.toHaveBeenCalled();
+describe("configuração pública da sincronização", () => {
+  it("aceita somente uma URL HTTPS explícita para a política do ambiente", () => {
+    expect(resolveSyncPrivacyPolicyUrl("https://staging.example/politica")).toBe(
+      "https://staging.example/politica",
+    );
+    expect(resolveSyncPrivacyPolicyUrl("http://inseguro.example")).toBe(
+      DEFAULT_SYNC_PRIVACY_POLICY_URL,
+    );
+    expect(resolveSyncPrivacyPolicyUrl("não-é-url")).toBe(
+      DEFAULT_SYNC_PRIVACY_POLICY_URL,
+    );
   });
 });

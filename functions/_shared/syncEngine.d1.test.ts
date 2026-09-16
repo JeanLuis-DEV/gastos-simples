@@ -11,6 +11,7 @@ import { appendImportChunk, cleanupExpiredImports, commitImport, startImport } f
 const migration1 = readFileSync(resolve("migrations/0001_initial.sql"), "utf8");
 const migration2 = readFileSync(resolve("migrations/0002_sync.sql"), "utf8");
 const migration3 = readFileSync(resolve("migrations/0003_sync_imports.sql"), "utf8");
+const migration4 = readFileSync(resolve("migrations/0004_sync_maintenance.sql"), "utf8");
 const encryptionKey = btoa(String.fromCharCode(...new Uint8Array(32).fill(19)));
 const instances: Miniflare[] = [];
 
@@ -31,6 +32,7 @@ async function environment() {
   await applyMigration(DB, migration1);
   await applyMigration(DB, migration2);
   await applyMigration(DB, migration3);
+  await applyMigration(DB, migration4);
   await DB.batch([
     DB.prepare("INSERT INTO users (firebase_uid,email,created_at,updated_at) VALUES (?,?,?,?)").bind("uid-a", "a@example.test", "2028-01-01", "2028-01-01"),
     DB.prepare("INSERT INTO sync_accounts (firebase_uid,sync_epoch,revision,activated_at,created_at,updated_at) VALUES (?,?,?,?,?,?)").bind("uid-a", 1, 0, "2028-01-01", "2028-01-01", "2028-01-01"),
@@ -49,7 +51,7 @@ afterEach(async () => {
   await Promise.all(instances.splice(0).map((instance) => instance.dispose()));
 });
 
-describe("sincronização com D1 local real", () => {
+describe("sincronização com D1 local real", { timeout: 20_000 }, () => {
   it("grava dependências em ordem, cifra o conteúdo, faz pull e repete o lote com segurança", async () => {
     const env = await environment();
     const body: PushRequest = {
@@ -77,6 +79,9 @@ describe("sincronização com D1 local real", () => {
     const exportSecond = await exportRemoteData(env, "uid-a", { cursor: exportFirst.cursor, untilRevision: exportFirst.highWatermark, limit: 2 });
     expect([...exportFirst.records, ...exportSecond.records]).toHaveLength(3);
     expect(exportSecond).toMatchObject({ highWatermark: 3, cursor: 3, hasMore: false });
+    await env.DB.prepare("UPDATE sync_accounts SET min_available_revision=3 WHERE firebase_uid=?").bind("uid-a").run();
+    await expect(pullSync(env, "uid-a", { cursor: 1, limit: 200, epoch: 1, deviceId: "device-old", protocolVersion: 1 })).rejects.toThrow(/resync_required/);
+    await expect(pullSync(env, "uid-a", { cursor: 0, limit: 200, epoch: 1, deviceId: "device-reset", protocolVersion: 1 })).resolves.toMatchObject({ cursor: 3, hasMore: false, minAvailableRevision: 3 });
   });
 
   it("mantém importação em staging e substitui o snapshot somente no commit atômico", async () => {

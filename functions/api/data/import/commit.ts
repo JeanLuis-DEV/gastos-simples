@@ -1,6 +1,6 @@
 import { authenticate } from "../../../_shared/auth";
 import { handle, HttpError, json } from "../../../_shared/http";
-import { ensureSyncAccount, rateLimitSync, requirePushEntitlement, requireSyncEnabled, syncEntitlement } from "../../../_shared/syncAccess";
+import { ensureSyncAccount, rateLimitSync, requirePublishedSyncPolicy, requirePushEntitlement, requireSyncCanaryAccess, requireSyncEnabled, syncEntitlement } from "../../../_shared/syncAccess";
 import { commitImport } from "../../../_shared/syncImport";
 import { exactObject, opaqueId, readJsonBody } from "../../../_shared/syncHttp";
 import type { PagesContext } from "../../../types";
@@ -8,7 +8,9 @@ import type { PagesContext } from "../../../types";
 export async function onRequestPost(context: PagesContext) {
   return handle(context, async () => {
     requireSyncEnabled(context.env);
+    requirePublishedSyncPolicy(context.env);
     const identity = await authenticate(context.request, context.env);
+    requireSyncCanaryAccess(identity.uid, context.env);
     await rateLimitSync(context.env, context.request, identity.uid, "import-commit", 5);
     await ensureSyncAccount(identity, context.env);
     requirePushEntitlement(await syncEntitlement(identity, context.env, true));

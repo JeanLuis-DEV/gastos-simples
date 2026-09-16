@@ -80,6 +80,35 @@ describe("proxy same-origin do helper Firebase", () => {
     ).toBe(false);
   });
 
+  it("usa o projeto Firebase isolado recebido do ambiente", async () => {
+    const fetchMock = vi.fn(async (_target: URL, _init: RequestInit) =>
+      Promise.resolve(new Response("ok")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await onRequest({
+      request: new Request("https://staging.example/__/auth/iframe"),
+      env: { FIREBASE_PROJECT_ID: "gastos-simples-staging" },
+    });
+
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).origin).toBe(
+      "https://gastos-simples-staging.firebaseapp.com",
+    );
+  });
+
+  it("rejeita projeto Firebase inválido sem atuar como open proxy", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await onRequest({
+      request: new Request("https://staging.example/__/auth/iframe"),
+      env: { FIREBASE_PROJECT_ID: "evil.example/path" },
+    });
+
+    expect(response.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it.each([
     "https://gastos.centralsimples.com.br/__/auth/%252e%252e/private",
     "https://gastos.centralsimples.com.br/__/auth/%255c%255cevil.example",

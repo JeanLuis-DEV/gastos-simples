@@ -1,0 +1,22 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "gastos-simples-sync-staging",
+  "compatibility_date": "2026-09-09",
+  "pages_build_output_dir": "./dist",
+  "vars": {
+    "FIREBASE_PROJECT_ID": "<STAGING_FIREBASE_PROJECT_ID>",
+    "APP_ORIGIN": "https://<STAGING_PAGES_HOST>",
+    "SYNC_ENABLED": "false",
+    "SYNC_POLICY_VERSION": "2026.09.15-sync.1",
+    "SYNC_CANARY_ADMIN_ONLY": "true",
+    "SYNC_ACTIVE_KEY_ID": "staging-v1"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "<STAGING_D1_NAME>",
+      "database_id": "<STAGING_D1_DATABASE_ID>",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

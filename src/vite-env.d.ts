@@ -2,6 +2,7 @@
 
 interface ImportMetaEnv {
   readonly VITE_SYNC_ENABLED?: string;
+  readonly VITE_SYNC_PRIVACY_POLICY_URL?: string;
 }
 
 interface ImportMeta {

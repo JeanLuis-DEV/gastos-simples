@@ -54,6 +54,7 @@ export type SyncStatusResponse = {
   enabled: boolean;
   syncEpoch: number;
   highWatermark: number;
+  minAvailableRevision: number;
   canPush: boolean;
   canPull: boolean;
   canExport: boolean;
@@ -104,11 +105,11 @@ export type PushResponse = {
 
 export const syncApi = {
   status: () => syncRequest<SyncStatusResponse>("/sync/status"),
-  activate: (deviceId: string, consentVersion: number) => syncRequest<{ enabled: true; syncEpoch: number; highWatermark: number }>("/sync/activate", { method: "POST", body: JSON.stringify({ protocolVersion: SYNC_PROTOCOL_VERSION, deviceId, consentVersion }) }),
+  activate: (deviceId: string, consentVersion: number) => syncRequest<{ enabled: true; syncEpoch: number; highWatermark: number; consentAcceptedAt: string }>("/sync/activate", { method: "POST", body: JSON.stringify({ protocolVersion: SYNC_PROTOCOL_VERSION, deviceId, consentVersion }) }),
   pull: (input: { cursor: number; untilRevision?: number; limit?: number; epoch: number; deviceId: string }) => {
     const query = new URLSearchParams({ cursor: String(input.cursor), limit: String(input.limit ?? 200), epoch: String(input.epoch), deviceId: input.deviceId, protocolVersion: String(SYNC_PROTOCOL_VERSION) });
     if (input.untilRevision !== undefined) query.set("untilRevision", String(input.untilRevision));
-    return syncRequest<{ protocolVersion: 1; syncEpoch: number; highWatermark: number; cursor: number; hasMore: boolean; serverTime: string; records: RemoteRecord[] }>(`/sync/pull?${query}`);
+    return syncRequest<{ protocolVersion: 1; syncEpoch: number; highWatermark: number; cursor: number; hasMore: boolean; minAvailableRevision: number; serverTime: string; records: RemoteRecord[] }>(`/sync/pull?${query}`);
   },
   push: (input: { syncEpoch: number; batchId: string; deviceId: string; operations: PushOperation[] }) => syncRequest<PushResponse>("/sync/push", { method: "POST", body: JSON.stringify({ protocolVersion: SYNC_PROTOCOL_VERSION, ...input }) }),
   disable: (deleteRemoteData: boolean) => syncRequest<{ enabled: false; deletionRequired: boolean }>("/sync/disable", { method: "POST", body: JSON.stringify({ deleteRemoteData }) }),

@@ -8,6 +8,7 @@ tmp/
 .env
 .env.*
 !.env.example
+!config/.env.staging.example
 *.log
 *.local
 .DS_Store

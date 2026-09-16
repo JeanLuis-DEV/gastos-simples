@@ -15,6 +15,7 @@ import {
   updateSyncState,
   acknowledgePush,
   applyRemotePage,
+  prepareFullResync,
 } from "./database";
 
 const item = (id: string, ownerUid = "sync-owner", changes: Partial<Transaction> = {}): Transaction => ({
@@ -181,5 +182,19 @@ describe("fundação local da sincronização", () => {
     await applyRemotePage("sync-owner", [{ entityType: "transaction", recordId: "conflict-pull", version: 3, revision: 3, isDeleted: true, deletedAt: "2028-01-03T00:00:00.000Z", payload: { profileId: "profile:principal:sync-owner", occurrenceKey: "single:conflict-pull", description: "Remoto", amountCents: 100, type: "expense", status: "pending", dueDate: "2028-01-01", categoryId: "category", categoryName: "Casa", notes: "", kind: "single" } }], { cursor: 3, epoch: 1, serverTime: "2028-01-03T00:00:00.000Z" });
     expect(await transactionsRepository.list("sync-owner")).toEqual([expect.objectContaining({ description: "Local" })]);
     expect(await listSyncConflicts("sync-owner")).toEqual([expect.objectContaining({ remoteDeleted: true })]);
+  });
+
+  it("prepara full resync removendo apenas cópias limpas e preservando alterações locais", async () => {
+    await getSyncState("sync-owner");
+    await transactionsRepository.put(item("clean-remote"), "initial-clean");
+    await transactionsRepository.put(item("pending-local"), "initial-pending");
+    const initial = await listOutbox("sync-owner");
+    await acknowledgePush("sync-owner", initial, { results: initial.map((entry, index) => ({ mutationId: entry.mutationId, status: "applied", records: [{ entityType: "transaction" as const, recordId: entry.recordId, version: 1, revision: index + 1, isDeleted: false }] })) });
+    await transactionsRepository.put({ ...(await transactionsRepository.list("sync-owner")).find(({ id }) => id === "pending-local")!, description: "Ainda não enviada" }, "pending-change");
+    await updateSyncState("sync-owner", { cursor: 20, epoch: 2 });
+    await prepareFullResync("sync-owner");
+    expect(await transactionsRepository.list("sync-owner")).toEqual([expect.objectContaining({ id: "pending-local", description: "Ainda não enviada", serverVersion: 0 })]);
+    expect(await listOutbox("sync-owner")).toEqual([expect.objectContaining({ recordId: "pending-local", baseVersion: 0, baseSnapshot: undefined })]);
+    expect(await getSyncState("sync-owner")).toMatchObject({ cursor: 0, epoch: 2 });
   });
 });

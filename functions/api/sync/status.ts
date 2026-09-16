@@ -1,6 +1,6 @@
 import { authenticate } from "../../_shared/auth";
 import { handle, json } from "../../_shared/http";
-import { ensureSyncAccount, rateLimitSync, syncEntitlement, updateRetention } from "../../_shared/syncAccess";
+import { ensureSyncAccount, isSyncCanaryAllowed, isSyncPolicyPublished, rateLimitSync, syncEntitlement, updateRetention } from "../../_shared/syncAccess";
 import type { PagesContext } from "../../types";
 
 export async function onRequestGet(context: PagesContext) {
@@ -12,10 +12,11 @@ export async function onRequestGet(context: PagesContext) {
     await updateRetention(context.env, identity.uid, entitlement);
     return json(context.env, {
       protocolVersion: 1,
-      available: context.env.SYNC_ENABLED === "true",
+      available: context.env.SYNC_ENABLED === "true" && isSyncPolicyPublished(context.env) && isSyncCanaryAllowed(identity.uid, context.env),
       enabled: Boolean(account?.activated_at && !account.disabled_at),
       syncEpoch: account?.sync_epoch ?? 1,
       highWatermark: account?.revision ?? 0,
+      minAvailableRevision: account?.min_available_revision ?? 0,
       canPush: ["trial", "active", "admin"].includes(entitlement),
       canPull: Boolean(account?.activated_at && !account.disabled_at),
       canExport: true,
