@@ -2,10 +2,10 @@
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "gastos-simples-sync-staging",
   "compatibility_date": "2026-09-09",
-  "pages_build_output_dir": "./dist",
+  "pages_build_output_dir": "../dist",
   "vars": {
-    "FIREBASE_PROJECT_ID": "<STAGING_FIREBASE_PROJECT_ID>",
-    "APP_ORIGIN": "https://<STAGING_PAGES_HOST>",
+    "FIREBASE_PROJECT_ID": "gastos-simples-staging-dev",
+    "APP_ORIGIN": "https://gastos-simples-sync-staging.pages.dev",
     "SYNC_ENABLED": "false",
     "SYNC_POLICY_VERSION": "2026.09.15-sync.1",
     "SYNC_CANARY_ADMIN_ONLY": "true",
@@ -14,7 +14,7 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "<STAGING_D1_NAME>",
+      "database_name": "gastos-simples-staging",
       "database_id": "<STAGING_D1_DATABASE_ID>",
       "migrations_dir": "migrations"
     }

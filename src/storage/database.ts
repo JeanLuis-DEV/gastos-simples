@@ -41,6 +41,19 @@ function syncFingerprint(entityType: SyncEntityType, operation: "upsert" | "dele
   return JSON.stringify({ entityType, recordId: payload.id, operation, payload: domain });
 }
 
+function notifySyncMutation(tx: IDBTransaction, ownerUid: string) {
+  if (mutationNotifications.has(tx)) return;
+  mutationNotifications.add(tx);
+  tx.addEventListener(
+    "complete",
+    () =>
+      globalThis.dispatchEvent(
+        new CustomEvent("gastos-sync-mutation", { detail: { ownerUid } }),
+      ),
+    { once: true },
+  );
+}
+
 function enqueueChange(
   tx: IDBTransaction,
   entityType: SyncEntityType,
@@ -50,10 +63,7 @@ function enqueueChange(
   mutationId: string,
   semantic?: OutboxEntry["semantic"],
 ) {
-  if (!mutationNotifications.has(tx)) {
-    mutationNotifications.add(tx);
-    tx.addEventListener("complete", () => globalThis.dispatchEvent(new CustomEvent("gastos-sync-mutation", { detail: { ownerUid: next.ownerUid } })), { once: true });
-  }
+  notifySyncMutation(tx, next.ownerUid);
   const fingerprint = syncFingerprint(entityType, operation, next);
   const id = outboxId(next.ownerUid, mutationId, entityType, next.id);
   const store = tx.objectStore("syncOutbox");
@@ -691,6 +701,7 @@ export async function resolveSyncConflict(ownerUid: string, conflictId: string, 
     const mutationId = crypto.randomUUID();
     const operation = chosen.isDeleted ? "delete" : "upsert";
     tx.objectStore("syncOutbox").put({ id: outboxId(ownerUid, mutationId, conflict.entityType, conflict.recordId), ownerUid, mutationId, entityType: conflict.entityType, recordId: conflict.recordId, operation, baseVersion: conflict.remote.serverVersion ?? 0, payload: chosen, baseSnapshot: conflict.remote, fingerprint: syncFingerprint(conflict.entityType, operation, chosen), createdAt: new Date().toISOString() } satisfies OutboxEntry);
+    notifySyncMutation(tx, ownerUid);
   }
   tx.objectStore("syncConflicts").delete(conflict.id);
   await done(tx, "Não foi possível resolver o conflito.");

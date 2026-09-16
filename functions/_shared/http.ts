@@ -7,7 +7,7 @@ const SECURITY_HEADERS: Record<string, string> = {
   "Referrer-Policy": "strict-origin-when-cross-origin",
   "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
   "Content-Security-Policy":
-    "default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com https://sdk.mercadopago.com https://http2.mlstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://lh3.googleusercontent.com; connect-src 'self' https://*.googleapis.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://api.mercadopago.com https://*.mercadopago.com https://api.mercadolibre.com https://http2.mlstatic.com; frame-src https://*.firebaseapp.com https://accounts.google.com https://*.mercadopago.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://www.mercadopago.com.br",
+    "default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com https://sdk.mercadopago.com https://http2.mlstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://lh3.googleusercontent.com; connect-src 'self' https://*.googleapis.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://api.mercadopago.com https://*.mercadopago.com https://api.mercadolibre.com https://http2.mlstatic.com; frame-src 'self' https://*.firebaseapp.com https://accounts.google.com https://*.mercadopago.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://www.mercadopago.com.br",
 };
 
 export function withSecurityHeaders(response: Response) {

@@ -65,7 +65,6 @@ export function SyncSettingsCard({ ownerUid, manager, snapshot, onChanged, onErr
   const resolve = (conflict: SyncConflict, choice: "local" | "remote") => run(async () => {
     await resolveSyncConflict(ownerUid, conflict.id, choice);
     await refreshConflicts();
-    manager.schedule(0);
     await onChanged();
   });
 

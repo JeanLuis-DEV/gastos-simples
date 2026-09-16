@@ -1,10 +1,10 @@
-const DEFAULT_FIREBASE_PROJECT_ID = "gastos-simples-8bd4e";
 const AUTH_PATH_PREFIX = "/__/auth/";
 
 type AuthProxyContext = { request: Request; env?: { FIREBASE_PROJECT_ID?: string } };
 
 function firebaseAuthOrigin(projectId?: string) {
-  const normalized = projectId?.trim() || DEFAULT_FIREBASE_PROJECT_ID;
+  const normalized = projectId?.trim();
+  if (!normalized) throw new Error("Configuração Firebase ausente.");
   if (!/^[a-z0-9][a-z0-9-]{4,28}[a-z0-9]$/.test(normalized))
     throw new Error("Projeto Firebase inválido.");
   return `https://${normalized}.firebaseapp.com`;
@@ -62,8 +62,13 @@ export async function onRequest(context: AuthProxyContext) {
   let target: URL;
   try {
     target = firebaseAuthUrl(request, context.env?.FIREBASE_PROJECT_ID);
-  } catch {
-    return proxyError(400, "Solicitação inválida.");
+  } catch (error) {
+    return proxyError(
+      error instanceof Error && error.message === "Configuração Firebase ausente."
+        ? 500
+        : 400,
+      "Solicitação inválida.",
+    );
   }
 
   const headers = new Headers(request.headers);

@@ -19,6 +19,11 @@ import { SYNC_PRIVACY_POLICY_VERSION } from "../../shared/syncPolicy";
 
 const LEASE_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_PUSH_BYTES = 256 * 1024;
+export const SYNC_MUTATION_DEBOUNCE_MS = 1_500;
+export const SYNC_ONLINE_DELAY_MS = 250;
+export const SYNC_VISIBILITY_DELAY_MS = 500;
+export const SYNC_VISIBILITY_MIN_INTERVAL_MS = 60_000;
+export const SYNC_SAVE_DATA_VISIBILITY_MIN_INTERVAL_MS = 5 * 60_000;
 const managers = new Map<string, SyncManager>();
 const activeOwners = new Set<string>();
 
@@ -153,6 +158,12 @@ export class SyncManager {
   private snapshot: SyncSnapshot = initialSnapshot;
   private listeners = new Set<(snapshot: SyncSnapshot) => void>();
   private timer?: number;
+  private timerReason?: "startup" | "mutation" | "online" | "visibility" | "retry";
+  private syncInFlight?: Promise<void>;
+  private mutationDuringSync = false;
+  private manualDuringSync = false;
+  private retryDelayAfterSync?: number;
+  private lastSuccessfulSyncAt = 0;
   private failures = 0;
   private stopped = true;
   private channel?: BroadcastChannel;
@@ -176,12 +187,14 @@ export class SyncManager {
     addEventListener("online", this.onOnline);
     addEventListener("gastos-sync-mutation", this.onMutation as EventListener);
     document.addEventListener("visibilitychange", this.onVisibility);
-    void this.refreshStatus().then(() => this.schedule(0));
+    void this.refreshStatus().then(() => this.scheduleTrigger("startup", 0));
   }
 
   stop() {
     this.stopped = true;
     clearTimeout(this.timer);
+    this.timer = undefined;
+    this.timerReason = undefined;
     removeEventListener("online", this.onOnline);
     removeEventListener("gastos-sync-mutation", this.onMutation as EventListener);
     document.removeEventListener("visibilitychange", this.onVisibility);
@@ -189,14 +202,61 @@ export class SyncManager {
     this.channel = undefined;
   }
 
-  private onOnline = () => this.schedule(250);
-  private onMutation = (event: CustomEvent<{ ownerUid?: string }>) => { if (event.detail?.ownerUid === this.ownerUid) this.schedule(800); };
-  private onVisibility = () => { if (document.visibilityState === "visible") this.schedule(500); };
+  private onOnline = () => this.scheduleTrigger("online", SYNC_ONLINE_DELAY_MS);
+  private onMutation = (event: CustomEvent<{ ownerUid?: string }>) => {
+    if (event.detail?.ownerUid !== this.ownerUid) return;
+    if (this.syncInFlight) {
+      this.mutationDuringSync = true;
+      return;
+    }
+    this.scheduleTrigger("mutation", SYNC_MUTATION_DEBOUNCE_MS);
+  };
+  private onVisibility = () => {
+    if (document.visibilityState === "visible") void this.scheduleVisibilitySync();
+  };
 
-  schedule(delay = 800) {
+  private async scheduleVisibilitySync() {
+    const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
+    const minimumInterval = connection?.saveData
+      ? SYNC_SAVE_DATA_VISIBILITY_MIN_INTERVAL_MS
+      : SYNC_VISIBILITY_MIN_INTERVAL_MS;
+    if (
+      this.stopped ||
+      this.syncInFlight ||
+      this.timer !== undefined ||
+      Date.now() - this.lastSuccessfulSyncAt < minimumInterval
+    )
+      return;
+    const pending = await listOutbox(this.ownerUid);
+    if (this.stopped || this.syncInFlight || this.timer !== undefined) return;
+    if (pending.length || Date.now() - this.lastSuccessfulSyncAt >= minimumInterval)
+      this.scheduleTrigger("visibility", SYNC_VISIBILITY_DELAY_MS);
+  }
+
+  private scheduleTrigger(
+    reason: "startup" | "mutation" | "online" | "visibility" | "retry",
+    delay: number,
+  ) {
     if (this.stopped || !canUseRemoteSync()) return;
-    clearTimeout(this.timer);
-    this.timer = window.setTimeout(() => void this.syncNow(), delay);
+    if (this.syncInFlight) {
+      if (reason === "mutation") this.mutationDuringSync = true;
+      return;
+    }
+    if (this.timer !== undefined) {
+      if (reason !== "mutation" && this.timerReason === "mutation") return;
+      clearTimeout(this.timer);
+    }
+    this.timerReason = reason;
+    this.timer = window.setTimeout(() => {
+      this.timer = undefined;
+      this.timerReason = undefined;
+      void this.runSync(reason);
+    }, delay);
+  }
+
+  /** Agenda somente uma alteração local já registrada atomicamente na outbox. */
+  schedule(delay = SYNC_MUTATION_DEBOUNCE_MS) {
+    this.scheduleTrigger("mutation", delay);
   }
 
   async refreshStatus() {
@@ -220,7 +280,7 @@ export class SyncManager {
     await replaceSyncState(this.ownerUid, { enabled: true, consentVersion, consentAcceptedAt: remote.consentAcceptedAt, epoch: remote.syncEpoch, cursor: 0, lastError: undefined });
     await recordSuccessfulEntitlement(this.ownerUid);
     this.publish({ enabled: true, available: true, canPush: true, status: "syncing" });
-    await this.syncNow();
+    await this.runSync("startup");
   }
 
   async disable(deleteRemoteData: boolean) {
@@ -233,10 +293,44 @@ export class SyncManager {
   async importSnapshot(backup: Backup, mode: "merge" | "replace") {
     const result = await syncApi.importRemote(backup, mode);
     await replaceSyncState(this.ownerUid, { epoch: result.syncEpoch, cursor: 0 });
-    await this.syncNow();
+    await this.runSync("startup");
   }
 
   async syncNow() {
+    return this.runSync("manual");
+  }
+
+  private async runSync(
+    reason: "startup" | "mutation" | "online" | "visibility" | "retry" | "manual",
+  ) {
+    if (this.syncInFlight) {
+      if (reason === "mutation") this.mutationDuringSync = true;
+      if (reason === "manual") this.manualDuringSync = true;
+      return this.syncInFlight;
+    }
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    this.timerReason = undefined;
+    const current = this.performSync();
+    this.syncInFlight = current;
+    try {
+      await current;
+    } finally {
+      this.syncInFlight = undefined;
+      const manualFollowUp = this.manualDuringSync;
+      const mutationFollowUp = this.mutationDuringSync;
+      const retryDelay = this.retryDelayAfterSync;
+      this.manualDuringSync = false;
+      this.mutationDuringSync = false;
+      this.retryDelayAfterSync = undefined;
+      if (manualFollowUp) this.scheduleTrigger("startup", 0);
+      else if (mutationFollowUp && (await listOutbox(this.ownerUid)).length)
+        this.scheduleTrigger("mutation", SYNC_MUTATION_DEBOUNCE_MS);
+      else if (retryDelay !== undefined) this.scheduleTrigger("retry", retryDelay);
+    }
+  }
+
+  private async performSync() {
     if (!canUseRemoteSync() || this.stopped || !navigator.onLine) {
       if (!navigator.onLine) this.publish({ status: "offline" });
       return;
@@ -278,6 +372,7 @@ export class SyncManager {
         const completedAt = new Date().toISOString();
         await updateSyncState(this.ownerUid, { lastSyncedAt: completedAt, lastError: undefined });
         this.failures = 0;
+        this.lastSuccessfulSyncAt = Date.now();
         this.publish({ enabled: true, available: true, canPush: status.canPush, lastSyncedAt: completedAt, conflictCount: conflicts.length, status: conflicts.length ? "conflicts" : "synced" });
       } catch (error) {
         if (error instanceof SyncHttpError && error.code === "resync_required") await prepareFullResync(this.ownerUid);
@@ -286,7 +381,7 @@ export class SyncManager {
         await updateSyncState(this.ownerUid, { lastError: errorMessage });
         this.publish({ status: navigator.onLine ? "error" : "offline", error: errorMessage });
         const base = Math.min(60_000, 1_000 * 2 ** Math.min(this.failures, 6));
-        this.schedule(base / 2 + Math.random() * base / 2);
+        this.retryDelayAfterSync = base / 2 + Math.random() * base / 2;
       }
     });
   }

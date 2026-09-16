@@ -75,7 +75,6 @@ export function DashboardApp({
       setSelectedProfileId("");
       await setSelectedProfile(user.uid, "");
     }
-    syncManager.schedule();
   };
   useEffect(() => {
     document.documentElement.dataset.theme = "dark";

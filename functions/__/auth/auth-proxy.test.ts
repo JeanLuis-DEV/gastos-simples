@@ -19,6 +19,7 @@ describe("proxy same-origin do helper Firebase", () => {
       request: new Request(
         "https://gastos.centralsimples.com.br/__/auth/iframe?apiKey=public&v=1",
       ),
+      env: { FIREBASE_PROJECT_ID: "gastos-simples-8bd4e" },
     });
 
     const [target, init] = fetchMock.mock.calls[0]!;
@@ -51,6 +52,7 @@ describe("proxy same-origin do helper Firebase", () => {
           body: "code=one-time",
         },
       ),
+      env: { FIREBASE_PROJECT_ID: "gastos-simples-8bd4e" },
     });
 
     expect(fetchMock.mock.calls[0]![1].method).toBe("POST");
@@ -68,6 +70,7 @@ describe("proxy same-origin do helper Firebase", () => {
       request: new Request(
         "https://host-injetado.example/__/auth/handler?url=https://evil.example/steal",
       ),
+      env: { FIREBASE_PROJECT_ID: "gastos-simples-8bd4e" },
     });
 
     const target = new URL(String(fetchMock.mock.calls[0]![0]));
@@ -109,13 +112,28 @@ describe("proxy same-origin do helper Firebase", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("falha fechado quando o projeto Firebase do ambiente não existe", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await onRequest({
+      request: new Request("https://staging.example/__/auth/iframe"),
+    });
+
+    expect(response.status).toBe(500);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it.each([
     "https://gastos.centralsimples.com.br/__/auth/%252e%252e/private",
     "https://gastos.centralsimples.com.br/__/auth/%255c%255cevil.example",
   ])("bloqueia path traversal: %s", async (url) => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    const response = await onRequest({ request: new Request(url) });
+    const response = await onRequest({
+      request: new Request(url),
+      env: { FIREBASE_PROJECT_ID: "gastos-simples-8bd4e" },
+    });
 
     expect(response.status).toBe(400);
     expect(fetchMock).not.toHaveBeenCalled();
@@ -127,6 +145,7 @@ describe("proxy same-origin do helper Firebase", () => {
       request: new Request(
         "https://gastos.centralsimples.com.br/__/auth/iframe",
       ),
+      env: { FIREBASE_PROJECT_ID: "gastos-simples-8bd4e" },
     });
 
     expect(response.headers.get("X-Frame-Options")).toBe("SAMEORIGIN");
@@ -151,9 +170,38 @@ describe("proxy same-origin do helper Firebase", () => {
       request: new Request(
         "https://gastos.centralsimples.com.br/__/auth/handler",
       ),
+      env: { FIREBASE_PROJECT_ID: "gastos-simples-8bd4e" },
     });
 
     expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+  });
+
+  it("preserva cookies, redirects e headers necessários do upstream", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(null, {
+          status: 302,
+          headers: {
+            Location: "/__/auth/handler?state=next",
+            "Set-Cookie": "session=opaque; Path=/; Secure; HttpOnly; SameSite=Lax",
+            "Cache-Control": "no-store",
+          },
+        }),
+      ),
+    );
+
+    const response = await onRequest({
+      request: new Request("https://staging.example/__/auth/handler"),
+      env: { FIREBASE_PROJECT_ID: "gastos-simples-staging-dev" },
+    });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("Location")).toBe(
+      "/__/auth/handler?state=next",
+    );
+    expect(response.headers.get("Set-Cookie")).toContain("session=opaque");
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
   });
 });
