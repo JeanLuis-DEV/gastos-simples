@@ -1,7 +1,9 @@
 import { Card, EmptyState } from "@apps-simples/ui";
+import { useState } from "react";
 import { localCivilDate } from "../../domain/dates";
 import { formatMoney, monthlyTotals } from "../../domain/money";
 import type { Transaction } from "../../domain/models";
+import { InfoPopover } from "./InfoPopover";
 
 type FinancialCardLabel =
   | "Saldo previsto"
@@ -29,6 +31,7 @@ export function DashboardView({
   items: Transaction[];
   totals: ReturnType<typeof monthlyTotals>;
 }) {
+  const [openInfo, setOpenInfo] = useState<"planned" | "realized">();
   const today = localCivilDate();
   const pending = items.filter((i) => i.status === "pending");
   const overdue = pending.filter((i) => i.dueDate < today);
@@ -51,7 +54,11 @@ export function DashboardView({
           ["Receitas", totals.incomePlanned],
         ] satisfies Array<[FinancialCardLabel, number]>).map(([label, value]) => (
           <Card key={label}>
-            <span className="summary-label">{label}</span>
+            <span className="summary-label-row">
+              <span className="summary-label">{label}</span>
+              {label === "Saldo previsto" && <InfoPopover label="Entenda o saldo previsto" open={openInfo === "planned"} onOpenChange={(open) => setOpenInfo(open ? "planned" : undefined)}>Receitas do mês menos despesas do mês, incluindo valores já realizados e valores ainda pendentes.</InfoPopover>}
+              {label === "Saldo realizado" && <InfoPopover label="Entenda o saldo realizado" align="end" open={openInfo === "realized"} onOpenChange={(open) => setOpenInfo(open ? "realized" : undefined)}>Receitas já recebidas menos despesas já pagas no mês. Valores pendentes não entram neste saldo.</InfoPopover>}
+            </span>
             <strong
               className={`summary-value ${financialValueTone(label, value)}`}
               data-tone={financialValueTone(label, value)}

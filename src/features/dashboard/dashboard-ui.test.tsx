@@ -261,6 +261,39 @@ describe("fluxos acessíveis da interface", () => {
     expect(financialValueTone(label, value)).toBe(tone);
   });
 
+  it("explica somente os dois saldos por hover, foco, toque e teclado", () => {
+    render(<DashboardView items={[]} totals={monthlyTotals([])} />);
+    const planned = screen.getByRole("button", { name: "Entenda o saldo previsto" });
+    const realized = screen.getByRole("button", { name: "Entenda o saldo realizado" });
+    expect(screen.getAllByRole("button", { name: /Entenda o saldo/ })).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: /Entenda (A pagar|A receber|Despesas|Receitas)/ })).toBeNull();
+
+    fireEvent.pointerEnter(planned.parentElement!, { pointerType: "mouse" });
+    expect(screen.getByText("Receitas do mês menos despesas do mês, incluindo valores já realizados e valores ainda pendentes.")).toBeTruthy();
+    expect(planned.getAttribute("aria-describedby")).toBe(planned.getAttribute("aria-controls"));
+    fireEvent.pointerLeave(planned.parentElement!, { pointerType: "mouse" });
+    expect(screen.queryByText(/incluindo valores já realizados/)).toBeNull();
+
+    fireEvent.focus(planned);
+    expect(screen.getByText(/incluindo valores já realizados/)).toBeTruthy();
+    fireEvent.click(realized);
+    expect(screen.queryByText(/incluindo valores já realizados/)).toBeNull();
+    expect(screen.getByText("Receitas já recebidas menos despesas já pagas no mês. Valores pendentes não entram neste saldo.")).toBeTruthy();
+    fireEvent.keyDown(realized, { key: "Escape" });
+    expect(screen.queryByText(/Valores pendentes não entram/)).toBeNull();
+
+    fireEvent.pointerDown(planned, { pointerType: "touch" });
+    fireEvent.click(planned);
+    expect(screen.getByText(/incluindo valores já realizados/)).toBeTruthy();
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByText(/incluindo valores já realizados/)).toBeNull();
+    fireEvent.pointerDown(planned, { pointerType: "touch" });
+    fireEvent.click(planned);
+    fireEvent.pointerDown(planned, { pointerType: "touch" });
+    fireEvent.click(planned);
+    expect(screen.queryByText(/incluindo valores já realizados/)).toBeNull();
+  });
+
   it("vira o ano e oferece Ajustes no cabeçalho com menu de quatro itens", async () => {
     render(
       <DashboardApp
