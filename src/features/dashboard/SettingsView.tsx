@@ -16,6 +16,8 @@ import { ConfirmModal } from "./ConfirmModal";
 import { InstitutionalContent } from "./InstitutionalContent";
 import { FinancialProfilesCard } from "./FinancialProfilesCard";
 import type { FeedbackProps } from "./types";
+import type { SyncManager, SyncSnapshot } from "../../sync/engine";
+import { SyncSettingsCard } from "./SyncSettingsCard";
 type Action = "clear" | "cancel" | undefined;
 export function SettingsView({
   user,
@@ -31,6 +33,8 @@ export function SettingsView({
   onProfilesChanged = async () => undefined,
   onProfileSelectionChanged = async () => undefined,
   onExportReport = () => undefined,
+  syncManager,
+  syncSnapshot,
 }: {
   user: AuthUser;
   entitlement: Entitlement;
@@ -42,6 +46,8 @@ export function SettingsView({
   onProfilesChanged?: () => Promise<void>;
   onProfileSelectionChanged?: (profileId: string) => Promise<void>;
   onExportReport?: (trigger: HTMLElement) => void;
+  syncManager?: SyncManager;
+  syncSnapshot?: SyncSnapshot;
 } & FeedbackProps) {
   const [action, setAction] = useState<Action>(),
     [backupToImport, setBackupToImport] = useState<Backup>(),
@@ -91,6 +97,8 @@ export function SettingsView({
     try {
       setBusy(true);
       await importBackup(user.uid, backupToImport, mode);
+      if (syncManager && syncSnapshot?.enabled)
+        await syncManager.importSnapshot(await exportBackup(user.uid), mode);
       setBackupToImport(undefined);
       onMessage(
         mode === "replace"
@@ -131,6 +139,7 @@ export function SettingsView({
         <h1 id="settings-title">Ajustes</h1>
       </div>
       <div className="settings-grid">
+        {syncManager && syncSnapshot && <SyncSettingsCard ownerUid={user.uid} manager={syncManager} snapshot={syncSnapshot} onChanged={onChanged} onError={onError} onMessage={onMessage} />}
         <FinancialProfilesCard
           ownerUid={user.uid}
           profiles={profiles}
@@ -264,7 +273,7 @@ export function SettingsView({
           do backup. Itens com o mesmo identificador serão atualizados.
           <br />
           <strong>Substituir</strong> remove os dados atuais desta conta antes
-          da importação. O arquivo já foi validado.
+          da importação. O arquivo já foi validado.{syncSnapshot?.enabled ? " Com a sincronização ativa, a substituição também será aplicada aos outros dispositivos." : ""}
         </p>
       </Modal>
     </section>

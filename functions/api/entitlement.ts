@@ -9,11 +9,12 @@ import {
 import type { PagesContext } from "../types";
 export async function onRequestGet(context: PagesContext) {
   return handle(context, async () => {
+    const serverTime = new Date().toISOString();
     const identity = await authenticate(context.request, context.env);
     if (hasAdministrativeAccess(identity.uid, context.env.ADMIN_FIREBASE_UIDS))
       return json(
         context.env,
-        { status: "admin", hasAccess: true },
+        { status: "admin", hasAccess: true, serverTime },
         200,
         context.request,
       );
@@ -26,7 +27,7 @@ export async function onRequestGet(context: PagesContext) {
     if (!stored?.mp_subscription_id)
       return json(
         context.env,
-        { status: "none", hasAccess: false },
+        { status: "none", hasAccess: false, serverTime },
         200,
         context.request,
       );
@@ -45,6 +46,7 @@ export async function onRequestGet(context: PagesContext) {
         status,
         hasAccess: ["active", "trial"].includes(status),
         nextPaymentAt: nextPaymentAt(subscription, status),
+        serverTime,
       },
       200,
       context.request,

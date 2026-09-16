@@ -20,6 +20,7 @@ export async function onRequestGet(context: PagesContext) {
       canPull: Boolean(account?.activated_at && !account.disabled_at),
       canExport: true,
       canDelete: true,
+      serverTime: new Date().toISOString(),
     }, 200, context.request);
   });
 }

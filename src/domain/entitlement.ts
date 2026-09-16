@@ -15,6 +15,7 @@ export type Entitlement = {
   hasAccess: boolean;
   nextPaymentAt?: string;
   trialEndsAt?: string;
+  serverTime?: string;
 };
 
 export function mapMercadoPagoStatus(

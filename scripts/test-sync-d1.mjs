@@ -9,6 +9,7 @@ const project = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const wrangler = join(project, "node_modules", "wrangler", "bin", "wrangler.js");
 const migration1 = join(project, "migrations", "0001_initial.sql");
 const migration2 = join(project, "migrations", "0002_sync.sql");
+const migration3 = join(project, "migrations", "0003_sync_imports.sql");
 
 function execute(persistTo, option, value) {
   const output = execFileSync(process.execPath, [
@@ -28,13 +29,15 @@ const upgraded = join(root, "upgraded");
 try {
   sqlFile(fresh, migration1);
   sqlFile(fresh, migration2);
-  assert.equal(scalar(fresh, "SELECT COUNT(*) count FROM sqlite_master WHERE type='table' AND name LIKE 'sync_%'", "count"), 20);
-  assert.equal(scalar(fresh, "SELECT COUNT(*) count FROM sqlite_master WHERE type='index' AND name LIKE 'sync_%_idx'", "count"), 17);
+  sqlFile(fresh, migration3);
+  assert.equal(scalar(fresh, "SELECT COUNT(*) count FROM sqlite_master WHERE type='table' AND name LIKE 'sync_%'", "count"), 23);
+  assert.equal(scalar(fresh, "SELECT COUNT(*) count FROM sqlite_master WHERE type='index' AND name LIKE 'sync_%_idx'", "count"), 19);
   assert.equal(scalar(fresh, "PRAGMA foreign_keys", "foreign_keys"), 1);
 
   sqlFile(upgraded, migration1);
   query(upgraded, "INSERT INTO users VALUES ('uid-a','a@example.test','A','2028-01-01','2028-01-01'); INSERT INTO users VALUES ('uid-b','b@example.test','B','2028-01-01','2028-01-01'); INSERT INTO subscriptions (firebase_uid,status_normalized,status_original,created_at,updated_at,last_verified_at) VALUES ('uid-a','active','authorized','2028-01-01','2028-01-01','2028-01-01'); INSERT INTO webhook_events VALUES ('event','subscription_preapproval','resource','2028-01-01','processed'); INSERT INTO rate_limits VALUES ('key',1,2)");
   sqlFile(upgraded, migration2);
+  sqlFile(upgraded, migration3);
   assert.equal(scalar(upgraded, "SELECT COUNT(*) count FROM users", "count"), 2);
   assert.equal(scalar(upgraded, "SELECT COUNT(*) count FROM subscriptions", "count"), 1);
   assert.equal(scalar(upgraded, "SELECT COUNT(*) count FROM webhook_events", "count"), 1);

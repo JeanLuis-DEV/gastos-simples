@@ -49,6 +49,30 @@ const key = (entityType: SyncEntityType, recordId: string) => `${entityType}:${r
 const entities: SyncEntityType[] = ["profile", "category", "series", "seriesSegment", "transaction", "calculator"];
 type KnownIdentities = { occurrences: Map<string, string>; categories: Map<string, string> };
 
+async function trimCalculatorHistory(env: Env, ownerUid: string, planned: Map<string, PlannedRecord>, mutationId: string, deletedAt: string) {
+  const active = new Map((await loadAllStoredRecords(env, ownerUid, "calculator")).map((record) => [record.recordId, record]));
+  for (const record of planned.values()) {
+    if (record.entityType !== "calculator") continue;
+    if (record.isDeleted) active.delete(record.recordId);
+    else active.set(record.recordId, record);
+  }
+  const excess = [...active.values()]
+    .sort((left, right) => String(right.payload.createdAt).localeCompare(String(left.payload.createdAt)) || right.recordId.localeCompare(left.recordId))
+    .slice(100);
+  for (const record of excess) {
+    const pending = planned.get(key("calculator", record.recordId));
+    planned.set(key("calculator", record.recordId), {
+      ...record,
+      previousVersion: pending?.previousVersion ?? record.version,
+      version: pending?.version ?? record.version + 1,
+      revision: 0,
+      isDeleted: true,
+      deletedAt,
+      mutationId: pending?.mutationId ?? mutationId,
+    });
+  }
+}
+
 async function preloadGenericState(env: Env, ownerUid: string, operations: PushCommand[]) {
   const ids = new Map<SyncEntityType, Set<string>>(entities.map((entity) => [entity, new Set()]));
   const occurrenceKeys = new Set<string>();
@@ -446,13 +470,15 @@ export async function pushSync(env: Env, identity: AuthIdentity, body: PushReque
     results.push(result);
     newOperations.push({ operation, hash, result });
   }
+  const now = new Date().toISOString();
+  const calculatorUpsert = newOperations.find(({ operation }) => operation.command === "upsert-record" && operation.entityType === "calculator");
+  if (calculatorUpsert) await trimCalculatorHistory(env, identity.uid, planned, calculatorUpsert.operation.mutationId, now);
   let revision = account.revision;
   for (const record of planned.values()) record.revision = ++revision;
   for (const item of newOperations) {
     const records = [...planned.values()].filter((record) => record.mutationId === item.operation.mutationId);
     if (records.length) item.result.records = records.map((record) => ({ entityType: record.entityType, recordId: record.recordId, version: record.version, revision: record.revision, isDeleted: record.isDeleted }));
   }
-  const now = new Date().toISOString();
   const response = { protocolVersion: 1, batchId: body.batchId, syncEpoch: account.sync_epoch, committedRevision: revision, highWatermark: revision, serverTime: now, results };
   const guardId = crypto.randomUUID();
   const statements: D1PreparedStatement[] = [
@@ -512,15 +538,22 @@ export async function pullSync(env: Env, ownerUid: string, input: { cursor: numb
   return { protocolVersion: 1, syncEpoch: account.sync_epoch, highWatermark, cursor: nextCursor, hasMore: nextCursor < highWatermark, serverTime: now, records };
 }
 
-export async function exportRemoteData(env: Env, ownerUid: string) {
+export async function exportRemoteData(env: Env, ownerUid: string, input: { cursor: number; untilRevision?: number; limit: number }) {
   const account = await env.DB.prepare("SELECT sync_epoch,revision FROM sync_accounts WHERE firebase_uid=?")
     .bind(ownerUid).first<{ sync_epoch: number; revision: number }>();
-  const data: Partial<Record<SyncEntityType, unknown[]>> = {};
-  for (const entityType of entities) {
-    const records = await loadAllStoredRecords(env, ownerUid, entityType, false);
-    data[entityType] = records.map((record) => ({ id: record.recordId, version: record.version, payload: record.payload }));
+  const highWatermark = input.untilRevision ?? account?.revision ?? 0;
+  if (highWatermark < input.cursor || highWatermark > (account?.revision ?? 0)) throw new HttpError(400, "Cursor de exportação inválido.");
+  const rows = await env.DB.prepare("WITH ranked AS (SELECT revision,entity_type,record_id,version,is_deleted,deleted_at,payload_ciphertext,payload_iv,key_id,ROW_NUMBER() OVER (PARTITION BY entity_type,record_id ORDER BY revision DESC) AS position FROM sync_changes WHERE firebase_uid=? AND revision<=?) SELECT revision,entity_type,record_id,version,is_deleted,deleted_at,payload_ciphertext,payload_iv,key_id FROM ranked WHERE position=1 AND revision>? ORDER BY revision LIMIT ?")
+    .bind(ownerUid, highWatermark, input.cursor, input.limit)
+    .all<{ revision: number; entity_type: SyncEntityType; record_id: string; version: number; is_deleted: number; deleted_at: string | null; payload_ciphertext: string; payload_iv: string; key_id: string }>();
+  const records = [];
+  let cursor = input.cursor;
+  for (const row of rows.results ?? []) {
+    const payload = await decryptPayload<Record<string, unknown>>(env, ownerUid, row.entity_type, row.record_id, { payloadCiphertext: row.payload_ciphertext, payloadIv: row.payload_iv, keyId: row.key_id });
+    records.push({ entityType: row.entity_type, recordId: row.record_id, version: row.version, revision: row.revision, isDeleted: row.is_deleted === 1, deletedAt: row.deleted_at ?? undefined, payload });
+    cursor = row.revision;
   }
-  return { schemaVersion: 1, exportedAt: new Date().toISOString(), syncEpoch: account?.sync_epoch ?? 1, revision: account?.revision ?? 0, data };
+  return { schemaVersion: 1, exportedAt: new Date().toISOString(), syncEpoch: account?.sync_epoch ?? 1, highWatermark, cursor, hasMore: cursor < highWatermark, records };
 }
 
 export async function deleteFinancialData(
@@ -548,7 +581,7 @@ export async function deleteFinancialData(
     env.DB.prepare(`INSERT INTO sync_write_guards (firebase_uid,request_id,valid) SELECT ?,?,CASE WHEN ${accountCondition} THEN 1 ELSE 0 END`)
       .bind(ownerUid, guardId, ...conditionValues),
   ];
-  for (const table of ["sync_mutation_receipts", "sync_batches", "sync_changes", "sync_tombstones", "sync_record_aliases", "sync_base_snapshots", "sync_conflicts", "sync_devices", "sync_series_segments", "sync_transactions", "sync_calculator_entries", "sync_series", "sync_categories", "sync_profiles", "sync_retention", "sync_deletion_nonces"])
+  for (const table of ["sync_import_chunks", "sync_import_records", "sync_import_sessions", "sync_mutation_receipts", "sync_batches", "sync_changes", "sync_tombstones", "sync_record_aliases", "sync_base_snapshots", "sync_conflicts", "sync_devices", "sync_series_segments", "sync_transactions", "sync_calculator_entries", "sync_series", "sync_categories", "sync_profiles", "sync_retention", "sync_deletion_nonces"])
     statements.push(env.DB.prepare(`DELETE FROM ${table} WHERE firebase_uid=?`).bind(ownerUid));
   statements.push(env.DB.prepare("UPDATE sync_accounts SET sync_epoch=?,revision=0,activated_at=NULL,disabled_at=?,updated_at=? WHERE firebase_uid=? AND sync_epoch=?")
     .bind(nextEpoch, timestamp, timestamp, ownerUid, expectedEpoch));

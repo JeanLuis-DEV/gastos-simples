@@ -11,6 +11,7 @@ import {
   signInWithPopup,
   signInWithRedirect,
   signOut,
+  reauthenticateWithPopup,
   type User,
 } from "firebase/auth";
 import { getPublicConfig } from "../config";
@@ -136,9 +137,20 @@ async function startGoogleLogin() {
 export async function logout() {
   await signOut(auth());
 }
-export async function getIdToken() {
+export async function reauthenticateWithGoogle() {
   const user = auth().currentUser;
   if (!user) throw new Error("Sessão não autenticada.");
-  return user.getIdToken();
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: "select_account" });
+  try {
+    await reauthenticateWithPopup(user, provider);
+  } catch (error) {
+    throw new Error(authErrorMessage(error));
+  }
+}
+export async function getIdToken(forceRefresh = false) {
+  const user = auth().currentUser;
+  if (!user) throw new Error("Sessão não autenticada.");
+  return user.getIdToken(forceRefresh);
 }
 export type AuthUser = Pick<User, "uid" | "displayName" | "email" | "photoURL">;

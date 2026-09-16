@@ -57,7 +57,7 @@ describe("endpoint de entitlement administrativo", () => {
   it("retorna admin sem consultar D1 ou Mercado Pago", async () => {
     const ctx = context("uid-admin");
     const response = await onRequestGet(ctx);
-    expect(await response.json()).toEqual({ status: "admin", hasAccess: true });
+    expect(await response.json()).toEqual({ status: "admin", hasAccess: true, serverTime: expect.any(String) });
     expect(mockedRegisterUser).not.toHaveBeenCalled();
     expect(ctx.env.DB.prepare).not.toHaveBeenCalled();
     expect(mockedGetSubscription).not.toHaveBeenCalled();
@@ -71,7 +71,7 @@ describe("endpoint de entitlement administrativo", () => {
         status: "admin",
       }),
     );
-    expect(await response.json()).toEqual({ status: "none", hasAccess: false });
+    expect(await response.json()).toEqual({ status: "none", hasAccess: false, serverTime: expect.any(String) });
     expect(mockedRegisterUser).toHaveBeenCalledTimes(1);
     expect(mockedGetSubscription).not.toHaveBeenCalled();
   });

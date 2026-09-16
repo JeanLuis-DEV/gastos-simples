@@ -7,6 +7,7 @@ import { monthlyTotals } from "../../domain/money";
 import type { Category, FinancialProfile, Transaction } from "../../domain/models";
 import { recurringOccurrenceForMonth } from "../../domain/transactions";
 import type { AuthUser } from "../../services/auth";
+import { useSync } from "../../sync/useSync";
 import {
   categoriesRepository,
   ensureDefaultCategories,
@@ -28,6 +29,7 @@ import { ReportModal } from "./ReportModal";
 import { ProfileSelect } from "./ProfileSelect";
 import type { TransactionPrefill } from "./TransactionForm";
 import type { View } from "./types";
+import { SyncStatus } from "./SyncStatus";
 
 const navigation: Array<[View, string]> = [
   ["dashboard", "Resumo"],
@@ -46,6 +48,7 @@ export function DashboardApp({
   onLogout: () => void;
   onSubscriptionChanged?: (entitlement: Entitlement) => void;
 }) {
+  const { manager: syncManager, snapshot: syncSnapshot } = useSync(user.uid);
   const [view, setView] = useState<View>("dashboard"),
     [month, setMonth] = useState(localCivilMonth()),
     [transactions, setTransactions] = useState<Transaction[]>([]),
@@ -72,6 +75,7 @@ export function DashboardApp({
       setSelectedProfileId("");
       await setSelectedProfile(user.uid, "");
     }
+    syncManager.schedule();
   };
   useEffect(() => {
     document.documentElement.dataset.theme = "dark";
@@ -116,6 +120,9 @@ export function DashboardApp({
     const timer = setTimeout(() => setMessage(""), 5000);
     return () => clearTimeout(timer);
   }, [message]);
+  useEffect(() => {
+    if (syncSnapshot.lastSyncedAt) void refresh().catch((reason) => setError((reason as Error).message));
+  }, [syncSnapshot.lastSyncedAt]);
   const visible = useMemo(
     () => transactions.filter((i) => monthKey(i.dueDate) === month && (!selectedProfileId || i.profileId === selectedProfileId)),
     [transactions, month, selectedProfileId],
@@ -159,6 +166,7 @@ export function DashboardApp({
             <small>Premium</small>
           </div>
           <div className="header-actions">
+            <SyncStatus snapshot={syncSnapshot} onSync={() => void syncManager.syncNow()} />
             <Button
               className="settings-button"
               size="compact"
@@ -307,6 +315,8 @@ export function DashboardApp({
             onProfilesChanged={refresh}
             onProfileSelectionChanged={changeProfile}
             onExportReport={(trigger) => { reportTriggerRef.current = trigger; setReportOpen(true); }}
+            syncManager={syncManager}
+            syncSnapshot={syncSnapshot}
           />
         )}
         <ReportModal open={reportOpen} ownerUid={user.uid} transactions={transactions} profiles={profiles} categories={categories} onClose={closeReport} onError={setError} onMessage={setMessage} />

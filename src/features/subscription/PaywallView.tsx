@@ -1,6 +1,8 @@
 import { Alert, Button, Card, Loading } from "@apps-simples/ui";
 import { COMMERCIAL_PLAN_PRICE_LABEL } from "../../../shared/commercialPlan";
 import type { Entitlement } from "../../domain/entitlement";
+import type { ReactNode } from "react";
+import { canUseRemoteSync } from "../../sync/config";
 
 const messages: Record<Entitlement["status"], string> = {
   admin: "Seu acesso administrativo está ativo.",
@@ -22,6 +24,7 @@ export function PaywallView({
   onStart,
   onRefresh,
   onLogout,
+  children,
 }: {
   entitlement?: Entitlement;
   error?: string;
@@ -29,6 +32,7 @@ export function PaywallView({
   onStart: () => void;
   onRefresh: () => void;
   onLogout: () => void;
+  children?: ReactNode;
 }) {
   const status = entitlement?.status ?? "none";
   const canStart = ["none", "cancelled", "rejected", "expired"].includes(
@@ -56,7 +60,7 @@ export function PaywallView({
           <ul>
             <li>Renovação recorrente pelo Mercado Pago</li>
             <li>Cancele quando quiser</li>
-            <li>Dados financeiros somente neste navegador</li>
+            <li>{canUseRemoteSync() ? "Sincronização entre dispositivos opcional" : "Dados financeiros somente neste navegador"}</li>
           </ul>
           {error && <Alert type="error">{error}</Alert>}
           {loading ? (
@@ -92,6 +96,7 @@ export function PaywallView({
         <Button variant="ghost" onClick={onLogout}>
           Sair
         </Button>
+        {children}
       </section>
     </main>
   );

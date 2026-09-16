@@ -1,6 +1,7 @@
 import { Card } from "@apps-simples/ui";
 import { version } from "../../../package.json";
 import { COMMERCIAL_PLAN_PRICE_LABEL } from "../../../shared/commercialPlan";
+import { canUseRemoteSync } from "../../sync/config";
 export function InstitutionalContent() {
   return (
     <Card>
@@ -9,9 +10,8 @@ export function InstitutionalContent() {
         <summary>Sobre</summary>
         <p>
           Gastos Simples é um aplicativo Web para organização financeira
-          pessoal. Os dados financeiros permanecem neste navegador e são
-          isolados pela conta Google. Os perfis financeiros também são locais;
-          seus nomes fazem parte do backup JSON.
+          pessoal. Os dados são isolados pela conta Google e permanecem disponíveis
+          neste navegador.{canUseRemoteSync() ? " A sincronização entre dispositivos é opcional e só começa após consentimento expresso." : ""}
         </p>
       </details>
       <details id="direito-de-uso">

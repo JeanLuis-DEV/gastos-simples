@@ -13,6 +13,8 @@ import {
   seriesSegmentsRepository,
   transactionsRepository,
   updateSyncState,
+  acknowledgePush,
+  applyRemotePage,
 } from "./database";
 
 const item = (id: string, ownerUid = "sync-owner", changes: Partial<Transaction> = {}): Transaction => ({
@@ -154,5 +156,30 @@ describe("fundação local da sincronização", () => {
     expect(await seriesSegmentsRepository.list("sync-owner")).toEqual([originalSegment]);
     expect((await transactionsRepository.list("sync-owner")).find(({ id }) => id === february.id)?.localVersion).toBe(1);
     expect((await listOutbox("sync-owner")).filter((entry) => entry.mutationId === "materialize-february")).toHaveLength(1);
+  });
+
+  it("mescla campos diferentes recebidos pelo pull e refaz a mutação sobre a versão remota", async () => {
+    await getSyncState("sync-owner");
+    await transactionsRepository.put(item("merge-pull"), "initial");
+    const initial = (await listOutbox("sync-owner"))[0]!;
+    await acknowledgePush("sync-owner", [initial], { results: [{ mutationId: "initial", status: "applied", records: [{ entityType: "transaction", recordId: "merge-pull", version: 1, revision: 1, isDeleted: false }] }] });
+    await transactionsRepository.put({ ...(await transactionsRepository.list("sync-owner"))[0]!, description: "Alteração local" }, "local-change");
+    await applyRemotePage("sync-owner", [{ entityType: "transaction", recordId: "merge-pull", version: 2, revision: 2, isDeleted: false, payload: { profileId: "profile:principal:sync-owner", occurrenceKey: "single:merge-pull", description: "Teste", amountCents: 250, type: "expense", status: "pending", dueDate: "2028-01-01", categoryId: "category", categoryName: "Casa", notes: "", kind: "single" } }], { cursor: 2, epoch: 1, serverTime: "2028-01-02T00:00:00.000Z" });
+    expect(await transactionsRepository.list("sync-owner")).toEqual([expect.objectContaining({ description: "Alteração local", amountCents: 250, serverVersion: 2 })]);
+    expect(await listSyncConflicts("sync-owner")).toEqual([]);
+    expect(await listOutbox("sync-owner")).toEqual([expect.objectContaining({ baseVersion: 2, baseSnapshot: expect.objectContaining({ amountCents: 250 }) })]);
+  });
+
+  it("preserva as duas propostas quando o mesmo campo mudou e não ressuscita tombstone", async () => {
+    await getSyncState("sync-owner");
+    await transactionsRepository.put(item("conflict-pull"), "initial-conflict");
+    const initial = (await listOutbox("sync-owner"))[0]!;
+    await acknowledgePush("sync-owner", [initial], { results: [{ mutationId: "initial-conflict", status: "applied", records: [{ entityType: "transaction", recordId: "conflict-pull", version: 1, revision: 1, isDeleted: false }] }] });
+    await transactionsRepository.put({ ...(await transactionsRepository.list("sync-owner"))[0]!, description: "Local" }, "local-conflict");
+    await applyRemotePage("sync-owner", [{ entityType: "transaction", recordId: "conflict-pull", version: 2, revision: 2, isDeleted: false, payload: { profileId: "profile:principal:sync-owner", occurrenceKey: "single:conflict-pull", description: "Remoto", amountCents: 100, type: "expense", status: "pending", dueDate: "2028-01-01", categoryId: "category", categoryName: "Casa", notes: "", kind: "single" } }], { cursor: 2, epoch: 1, serverTime: "2028-01-02T00:00:00.000Z" });
+    expect(await listSyncConflicts("sync-owner")).toEqual([expect.objectContaining({ conflictingFields: ["description"], local: expect.objectContaining({ description: "Local" }), remote: expect.objectContaining({ description: "Remoto" }) })]);
+    await applyRemotePage("sync-owner", [{ entityType: "transaction", recordId: "conflict-pull", version: 3, revision: 3, isDeleted: true, deletedAt: "2028-01-03T00:00:00.000Z", payload: { profileId: "profile:principal:sync-owner", occurrenceKey: "single:conflict-pull", description: "Remoto", amountCents: 100, type: "expense", status: "pending", dueDate: "2028-01-01", categoryId: "category", categoryName: "Casa", notes: "", kind: "single" } }], { cursor: 3, epoch: 1, serverTime: "2028-01-03T00:00:00.000Z" });
+    expect(await transactionsRepository.list("sync-owner")).toEqual([expect.objectContaining({ description: "Local" })]);
+    expect(await listSyncConflicts("sync-owner")).toEqual([expect.objectContaining({ remoteDeleted: true })]);
   });
 });

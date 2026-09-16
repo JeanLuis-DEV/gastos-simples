@@ -1,11 +1,12 @@
 import { Alert, Loading } from "@apps-simples/ui";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getPublicConfig } from "./config";
 import type { Entitlement } from "./domain/entitlement";
 import { DashboardApp } from "./features/dashboard/DashboardApp";
 import { LoginView } from "./features/auth/LoginView";
 import { PaywallView } from "./features/subscription/PaywallView";
 import { SubscriptionCheckoutView } from "./features/subscription/SubscriptionCheckoutView";
+import { RestrictedDataArea } from "./features/subscription/RestrictedDataArea";
 import {
   getEntitlement,
   getSubscriptionConfig,
@@ -17,6 +18,7 @@ import {
   logout,
   type AuthUser,
 } from "./services/auth";
+import { hasValidOfflineLease, invalidateSyncLease, recordSuccessfulEntitlement } from "./sync/engine";
 
 export function subscriptionReturnError(search = location.search) {
   const params = new URLSearchParams(search);
@@ -32,6 +34,7 @@ export function subscriptionReturnError(search = location.search) {
 }
 
 export default function App() {
+  const previousUid = useRef<string | undefined>(undefined);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -39,6 +42,7 @@ export default function App() {
   const [entitlement, setEntitlement] = useState<Entitlement>();
   const [entitlementLoading, setEntitlementLoading] = useState(false);
   const [checkoutPublicKey, setCheckoutPublicKey] = useState("");
+  const [offlineLease, setOfflineLease] = useState(false);
   const configError = (() => {
     try {
       getPublicConfig();
@@ -54,6 +58,8 @@ export default function App() {
     }
     const unsubscribe = initializeAuth(
       (value) => {
+        if (previousUid.current && previousUid.current !== value?.uid) void invalidateSyncLease(previousUid.current);
+        previousUid.current = value?.uid;
         setUser(value);
         setAuthReady(true);
       },
@@ -69,7 +75,12 @@ export default function App() {
     setEntitlementLoading(true);
     setError("");
     try {
-      setEntitlement(await getEntitlement());
+      const next = await getEntitlement();
+      setEntitlement(next);
+      if (next.hasAccess) {
+        await recordSuccessfulEntitlement(user.uid, next.serverTime);
+        setOfflineLease(true);
+      }
     } catch (e) {
       setEntitlement({ status: "temporary_error", hasAccess: false });
       setError((e as Error).message);
@@ -78,9 +89,18 @@ export default function App() {
     }
   };
   useEffect(() => {
-    if (user) void refreshEntitlement();
-    else setEntitlement(undefined);
+    if (user) {
+      void refreshEntitlement();
+      void hasValidOfflineLease(user.uid).then(setOfflineLease);
+    } else {
+      setEntitlement(undefined);
+      setOfflineLease(false);
+    }
   }, [user?.uid]);
+  const handleLogout = async () => {
+    if (user) await invalidateSyncLease(user.uid);
+    await logout();
+  };
   if (!authReady)
     return (
       <main className="center-state">
@@ -128,14 +148,14 @@ export default function App() {
         }}
       />
     );
-  if (!entitlement?.hasAccess)
+  if (!entitlement?.hasAccess && !(entitlement?.status === "temporary_error" && offlineLease))
     return (
       <PaywallView
         entitlement={entitlement}
         error={error}
         loading={entitlementLoading}
         onRefresh={() => void refreshEntitlement()}
-        onLogout={() => void logout()}
+        onLogout={() => void handleLogout()}
         onStart={() => {
           if (entitlementLoading) return;
           setError("");
@@ -145,13 +165,15 @@ export default function App() {
             .catch((e) => setError((e as Error).message))
             .finally(() => setEntitlementLoading(false));
         }}
-      />
+      >
+        <RestrictedDataArea ownerUid={user.uid} />
+      </PaywallView>
     );
   return (
     <DashboardApp
       user={user}
       entitlement={entitlement}
-      onLogout={() => void logout()}
+      onLogout={() => void handleLogout()}
       onSubscriptionChanged={setEntitlement}
     />
   );

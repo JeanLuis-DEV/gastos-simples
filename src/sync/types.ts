@@ -37,6 +37,9 @@ export type OutboxEntry = {
   baseSnapshot?: SyncPayload;
   fingerprint: string;
   createdAt: string;
+  semantic?:
+    | { command: "delete-profile-and-transfer"; destinationProfileId: string }
+    | { command: "edit-series-future" | "delete-series-future"; effectiveFrom: string };
 };
 
 export type SyncState = {
@@ -46,6 +49,12 @@ export type SyncState = {
   epoch: number;
   enabled: boolean;
   lastSyncedAt?: string;
+  consentVersion?: number;
+  leaseValidatedAt?: string;
+  leaseDeadlineMs?: number;
+  leaseObservedWallMs?: number;
+  leaseObservedMonotonicMs?: number;
+  lastError?: string;
 };
 
 export type SyncBaseSnapshot = {
@@ -68,4 +77,17 @@ export type SyncConflict = {
   remote: SyncPayload;
   conflictingFields: string[];
   createdAt: string;
+  remoteDeleted?: boolean;
+};
+
+export type SyncUiStatus = "disabled" | "syncing" | "synced" | "offline" | "error" | "conflicts";
+
+export type RemoteRecord = {
+  entityType: SyncEntityType;
+  recordId: string;
+  version: number;
+  revision: number;
+  isDeleted: boolean;
+  deletedAt?: string;
+  payload: Record<string, unknown>;
 };

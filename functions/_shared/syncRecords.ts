@@ -74,7 +74,7 @@ function normalizedCategoryKey(name: unknown, type: unknown) {
   return `${String(type)}:${String(name).trim().toLocaleLowerCase("pt-BR").normalize("NFD").replace(/[\u0300-\u036f]/g, "")}`;
 }
 
-function structural(entityType: SyncEntityType, payload: Record<string, unknown>) {
+export function structuralFields(entityType: SyncEntityType, payload: Record<string, unknown>) {
   switch (entityType) {
     case "profile":
     case "calculator": return { columns: [] as string[], values: [] as unknown[] };
@@ -100,7 +100,7 @@ export async function recordWriteStatements(
   if (!records.length) return [];
   const prepared = await Promise.all(records.map(async (record) => ({
     record,
-    fields: structural(record.entityType, record.payload),
+    fields: structuralFields(record.entityType, record.payload),
     encrypted: await encryptPayload(env, ownerUid, record.entityType, record.recordId, record.payload),
   })));
   const statements: D1PreparedStatement[] = [];

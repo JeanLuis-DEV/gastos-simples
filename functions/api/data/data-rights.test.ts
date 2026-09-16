@@ -35,7 +35,7 @@ describe("direitos de exportação e exclusão", () => {
   it("exporta pela identidade autenticada sem consultar assinatura", async () => {
     const { context: ctx } = context("/api/data/export", "GET");
     expect((await exportData(ctx)).status).toBe(200);
-    expect(mockedExport).toHaveBeenCalledWith(ctx.env, "authenticated-uid");
+    expect(mockedExport).toHaveBeenCalledWith(ctx.env, "authenticated-uid", { cursor: 0, untilRevision: undefined, limit: 200 });
   });
 
   it("armazena somente o hash do nonce de exclusão", async () => {

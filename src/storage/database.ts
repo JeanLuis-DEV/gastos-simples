@@ -2,6 +2,8 @@ import { isValidCivilDate } from "../domain/dates";
 import type { CalculatorEntry, Category, FinancialProfile, ThemePreference, Transaction, TransactionKind, TransactionSeries, TransactionSeriesSegment, TransactionStatus, TransactionType } from "../domain/models";
 import { DEFAULT_CATEGORIES } from "../domain/models";
 import type { OutboxEntry, SyncBaseSnapshot, SyncConflict, SyncEntityType, SyncPayload, SyncState } from "../sync/types";
+import type { RemoteRecord } from "../sync/types";
+import { payloadForServer, payloadFromServer, sameServerPayload } from "../sync/serialization";
 
 const DB_NAME = "gastos-simples";
 const DB_VERSION = 3;
@@ -9,6 +11,7 @@ type StoreName = "transactions" | "categories" | "calculator" | "preferences" | 
 const SYNC_STORES = ["syncOutbox", "syncState", "syncBaseSnapshots", "syncConflicts"] as const;
 const principalId = (uid: string) => `profile:principal:${uid}`;
 const nameKey = (name: string) => name.trim().toLocaleLowerCase("pt-BR");
+const mutationNotifications = new WeakSet<IDBTransaction>();
 export const categoryCanonicalKey = (category: Pick<Category, "name" | "type">) =>
   `${category.type}:${nameKey(category.name).normalize("NFD").replace(/[\u0300-\u036f]/g, "")}`;
 
@@ -45,7 +48,12 @@ function enqueueChange(
   previous: SyncPayload | undefined,
   operation: "upsert" | "delete",
   mutationId: string,
+  semantic?: OutboxEntry["semantic"],
 ) {
+  if (!mutationNotifications.has(tx)) {
+    mutationNotifications.add(tx);
+    tx.addEventListener("complete", () => globalThis.dispatchEvent(new CustomEvent("gastos-sync-mutation", { detail: { ownerUid: next.ownerUid } })), { once: true });
+  }
   const fingerprint = syncFingerprint(entityType, operation, next);
   const id = outboxId(next.ownerUid, mutationId, entityType, next.id);
   const store = tx.objectStore("syncOutbox");
@@ -70,6 +78,7 @@ function enqueueChange(
           baseSnapshot: previous,
           fingerprint,
           createdAt: new Date().toISOString(),
+          semantic,
         } satisfies OutboxEntry);
       } catch {
         tx.abort();
@@ -436,9 +445,10 @@ export async function putTransactionsAtomic(
       deletedAt: previousSeries?.deletedAt,
       serverVersion: previousSeries?.serverVersion ?? 0,
     }, previousSeries);
-    if (seriesChanged) {
+    if (seriesChanged || options.segmentFrom) {
       seriesStore.put(nextSeries);
-      enqueueChange(tx, "series", nextSeries, previousSeries, nextSeries.isDeleted ? "delete" : "upsert", mutationId);
+      enqueueChange(tx, "series", nextSeries, previousSeries, nextSeries.isDeleted ? "delete" : "upsert", mutationId,
+        options.endSeriesBefore ? { command: "delete-series-future", effectiveFrom: options.endSeriesBefore } : options.segmentFrom ? { command: "edit-series-future", effectiveFrom: options.segmentFrom } : undefined);
     }
 
     if (!previousSeries || options.segmentFrom) {
@@ -487,6 +497,17 @@ export async function listOutbox(ownerUid: string) {
   return result<OutboxEntry[]>(db.transaction("syncOutbox").objectStore("syncOutbox").index("ownerUid").getAll(ownerUid));
 }
 
+export async function discardOutboxEntries(ownerUid: string, ids: string[]) {
+  if (!ids.length) return;
+  const db = await openDatabase();
+  const tx = db.transaction("syncOutbox", "readwrite");
+  for (const id of ids) {
+    const entry = await result<OutboxEntry | undefined>(tx.objectStore("syncOutbox").get(id));
+    if (entry?.ownerUid === ownerUid) tx.objectStore("syncOutbox").delete(id);
+  }
+  await done(tx);
+}
+
 export async function listSyncBaseSnapshots(ownerUid: string) {
   const db = await openDatabase();
   return result<SyncBaseSnapshot[]>(db.transaction("syncBaseSnapshots").objectStore("syncBaseSnapshots").index("ownerUid").getAll(ownerUid));
@@ -526,6 +547,125 @@ export async function updateSyncState(ownerUid: string, changes: Partial<Omit<Sy
   const db = await openDatabase();
   await result(db.transaction("syncState", "readwrite").objectStore("syncState").put(next));
   return next;
+}
+
+export async function replaceSyncState(ownerUid: string, changes: Partial<Omit<SyncState, "ownerUid" | "deviceId">>) {
+  const current = await getSyncState(ownerUid);
+  const next: SyncState = { ...current, ...changes, ownerUid, deviceId: current.deviceId };
+  const db = await openDatabase();
+  await result(db.transaction("syncState", "readwrite").objectStore("syncState").put(next));
+  return next;
+}
+
+const storeByEntity: Record<SyncEntityType, Exclude<StoreName, "preferences">> = {
+  transaction: "transactions",
+  category: "categories",
+  calculator: "calculator",
+  profile: "profiles",
+  series: "series",
+  seriesSegment: "seriesSegments",
+};
+
+function mergeFields(base: Record<string, unknown>, local: Record<string, unknown>, remote: Record<string, unknown>) {
+  const value = { ...remote };
+  const conflicts: string[] = [];
+  for (const field of new Set([...Object.keys(base), ...Object.keys(local), ...Object.keys(remote)])) {
+    const localChanged = !Object.is(base[field], local[field]);
+    const remoteChanged = !Object.is(base[field], remote[field]);
+    if (localChanged && remoteChanged && !Object.is(local[field], remote[field])) conflicts.push(field);
+    else if (localChanged && !remoteChanged) value[field] = local[field];
+  }
+  return { value, conflicts: conflicts.sort() };
+}
+
+export async function applyRemotePage(ownerUid: string, records: RemoteRecord[], state: { cursor: number; epoch: number; serverTime: string }) {
+  if (records.some((record) => !storeByEntity[record.entityType])) throw new Error("Resposta de sincronização inválida.");
+  const db = await openDatabase();
+  const tx = db.transaction([...Object.values(storeByEntity), "syncOutbox", "syncState", "syncBaseSnapshots", "syncConflicts"], "readwrite");
+  const outboxStore = tx.objectStore("syncOutbox");
+  const pending = await result<OutboxEntry[]>(outboxStore.index("ownerUid").getAll(ownerUid));
+  for (const remoteRecord of records) {
+    const store = tx.objectStore(storeByEntity[remoteRecord.entityType]);
+    const current = await result<SyncPayload | undefined>(store.get(remoteRecord.recordId));
+    if (current && current.ownerUid !== ownerUid) {
+      tx.abort();
+      throw new Error("Resposta de sincronização inválida.");
+    }
+    const remote = payloadFromServer(remoteRecord.entityType, remoteRecord.recordId, ownerUid, remoteRecord.payload, { ...remoteRecord, serverTime: state.serverTime }, current);
+    const related = pending.filter((entry) => entry.entityType === remoteRecord.entityType && entry.recordId === remoteRecord.recordId);
+    const snapshot: SyncBaseSnapshot = { id: `${ownerUid}:${remoteRecord.entityType}:${remoteRecord.recordId}`, ownerUid, entityType: remoteRecord.entityType, recordId: remoteRecord.recordId, serverVersion: remoteRecord.version, payload: remote };
+    tx.objectStore("syncBaseSnapshots").put(snapshot);
+    if (!related.length || !current) {
+      store.put(remote);
+      continue;
+    }
+    if (remoteRecord.isDeleted && current.isDeleted !== true) {
+      const first = related[0]!;
+      tx.objectStore("syncConflicts").put({ id: `${ownerUid}:${first.mutationId}:${remoteRecord.entityType}:${remoteRecord.recordId}`, ownerUid, entityType: remoteRecord.entityType, recordId: remoteRecord.recordId, mutationId: first.mutationId, base: first.baseSnapshot, local: current, remote, conflictingFields: ["exclusão"], remoteDeleted: true, createdAt: state.serverTime } satisfies SyncConflict);
+      continue;
+    }
+    const first = related[0]!;
+    const base = first.baseSnapshot ? payloadForServer(remoteRecord.entityType, first.baseSnapshot) : {};
+    const merged = mergeFields(base, payloadForServer(remoteRecord.entityType, current), remoteRecord.payload);
+    if (merged.conflicts.length) {
+      tx.objectStore("syncConflicts").put({ id: `${ownerUid}:${first.mutationId}:${remoteRecord.entityType}:${remoteRecord.recordId}`, ownerUid, entityType: remoteRecord.entityType, recordId: remoteRecord.recordId, mutationId: first.mutationId, base: first.baseSnapshot, local: current, remote, conflictingFields: merged.conflicts, createdAt: state.serverTime } satisfies SyncConflict);
+      continue;
+    }
+    related.forEach((entry) => outboxStore.delete(entry.id));
+    const next = payloadFromServer(remoteRecord.entityType, remoteRecord.recordId, ownerUid, merged.value, { ...remoteRecord, isDeleted: current.isDeleted === true, serverTime: state.serverTime }, current);
+    store.put(next);
+    if (!sameServerPayload(remoteRecord.entityType, next, remote)) {
+      const mutationId = crypto.randomUUID();
+      const operation = next.isDeleted ? "delete" : "upsert";
+      outboxStore.put({ id: outboxId(ownerUid, mutationId, remoteRecord.entityType, remoteRecord.recordId), ownerUid, mutationId, entityType: remoteRecord.entityType, recordId: remoteRecord.recordId, operation, baseVersion: remoteRecord.version, payload: next, baseSnapshot: remote, fingerprint: syncFingerprint(remoteRecord.entityType, operation, next), createdAt: state.serverTime } satisfies OutboxEntry);
+    }
+  }
+  const currentState = await result<SyncState | undefined>(tx.objectStore("syncState").get(ownerUid));
+  if (!currentState) throw new Error("Estado de sincronização inexistente.");
+  tx.objectStore("syncState").put({ ...currentState, cursor: state.cursor, epoch: state.epoch });
+  await done(tx, "Não foi possível aplicar os dados recebidos.");
+}
+
+export async function acknowledgePush(ownerUid: string, entries: OutboxEntry[], response: { results: Array<{ mutationId: string; status: string; canonicalRecordId?: string; records?: Array<{ entityType: SyncEntityType; recordId: string; version: number; revision: number; isDeleted: boolean }> }> }) {
+  const db = await openDatabase();
+  const tx = db.transaction([...Object.values(storeByEntity), "syncOutbox", "syncBaseSnapshots"], "readwrite");
+  for (const resultItem of response.results) {
+    if (!["applied", "merged", "already_applied", "aliased"].includes(resultItem.status)) continue;
+    const mutationEntries = entries.filter((entry) => entry.mutationId === resultItem.mutationId);
+    for (const entry of mutationEntries) {
+      const current = await result<SyncPayload | undefined>(tx.objectStore(storeByEntity[entry.entityType]).get(entry.recordId));
+      if (resultItem.status === "aliased") {
+        if (current?.ownerUid === ownerUid) tx.objectStore(storeByEntity[entry.entityType]).delete(entry.recordId);
+      } else if (current?.ownerUid === ownerUid) {
+        const metadata = resultItem.records?.find((record) => record.entityType === entry.entityType && record.recordId === entry.recordId);
+        if (metadata) {
+          const updated = { ...current, serverVersion: metadata.version, serverRevision: metadata.revision } as SyncPayload;
+          tx.objectStore(storeByEntity[entry.entityType]).put(updated);
+          tx.objectStore("syncBaseSnapshots").put({ id: `${ownerUid}:${entry.entityType}:${entry.recordId}`, ownerUid, entityType: entry.entityType, recordId: entry.recordId, serverVersion: metadata.version, payload: updated } satisfies SyncBaseSnapshot);
+        }
+      }
+      tx.objectStore("syncOutbox").delete(entry.id);
+    }
+  }
+  await done(tx, "Não foi possível confirmar as alterações sincronizadas.");
+}
+
+export async function resolveSyncConflict(ownerUid: string, conflictId: string, choice: "local" | "remote") {
+  const db = await openDatabase();
+  const tx = db.transaction([...Object.values(storeByEntity), "syncOutbox", "syncConflicts"], "readwrite");
+  const conflict = await result<SyncConflict | undefined>(tx.objectStore("syncConflicts").get(conflictId));
+  if (!conflict || conflict.ownerUid !== ownerUid) throw new Error("Conflito inexistente.");
+  const chosen = choice === "local" ? conflict.local : conflict.remote;
+  tx.objectStore(storeByEntity[conflict.entityType]).put(chosen);
+  const pending = await result<OutboxEntry[]>(tx.objectStore("syncOutbox").index("ownerUid").getAll(ownerUid));
+  pending.filter((entry) => entry.entityType === conflict.entityType && entry.recordId === conflict.recordId).forEach((entry) => tx.objectStore("syncOutbox").delete(entry.id));
+  if (choice === "local") {
+    const mutationId = crypto.randomUUID();
+    const operation = chosen.isDeleted ? "delete" : "upsert";
+    tx.objectStore("syncOutbox").put({ id: outboxId(ownerUid, mutationId, conflict.entityType, conflict.recordId), ownerUid, mutationId, entityType: conflict.entityType, recordId: conflict.recordId, operation, baseVersion: conflict.remote.serverVersion ?? 0, payload: chosen, baseSnapshot: conflict.remote, fingerprint: syncFingerprint(conflict.entityType, operation, chosen), createdAt: new Date().toISOString() } satisfies OutboxEntry);
+  }
+  tx.objectStore("syncConflicts").delete(conflict.id);
+  await done(tx, "Não foi possível resolver o conflito.");
 }
 
 export async function calculatorEntriesForSync(ownerUid: string, limit = 100) {
@@ -600,7 +740,8 @@ export async function deleteFinancialProfile(ownerUid: string, sourceId: string,
   });
   const tombstone = syncRecord({ ...source, isDeleted: true, deletedAt: timestamp, updatedAt: timestamp }, source);
   tx.objectStore("profiles").put(tombstone);
-  enqueueChange(tx, "profile", tombstone, source, "delete", mutationId);
+  const transferDestination = destination?.id ?? profiles.find((profile) => profile.id !== sourceId)!.id;
+  enqueueChange(tx, "profile", tombstone, source, "delete", mutationId, { command: "delete-profile-and-transfer", destinationProfileId: transferDestination });
   await done(tx, "A exclusão foi cancelada sem alterar os dados.");
   return { transferred: linked.length, destinationId: destination?.id };
 }
