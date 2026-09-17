@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { localCivilDate } from "../../domain/dates";
 import { reauthenticateWithGoogle } from "../../services/auth";
 import { listSyncConflicts, resolveSyncConflict } from "../../storage/database";
-import { syncApi } from "../../sync/client";
+import { SyncHttpError, syncApi } from "../../sync/client";
 import { canUseRemoteSync, SYNC_PRIVACY_POLICY_URL } from "../../sync/config";
 import type { SyncManager, SyncSnapshot } from "../../sync/engine";
 import type { SyncConflict } from "../../sync/types";
@@ -50,8 +50,15 @@ export function SyncSettingsCard({ ownerUid, manager, snapshot, onChanged, onErr
     onMessage("Cópia da nuvem baixada.");
   });
   const deleteRemote = () => run(async () => {
-    await reauthenticateWithGoogle();
-    const { nonce } = await syncApi.deletionIntent();
+    let intent;
+    try {
+      intent = await syncApi.deletionIntent();
+    } catch (error) {
+      if (!(error instanceof SyncHttpError) || error.status !== 401) throw error;
+      await reauthenticateWithGoogle();
+      intent = await syncApi.deletionIntent();
+    }
+    const { nonce } = intent;
     await syncApi.deleteRemote(nonce);
     setDeleteOpen(false);
     setConfirmation("");

@@ -148,4 +148,50 @@ describe("interface de sincronização", () => {
     expect(within(dialog).getByText(/Conta Google, a assinatura nem registros legais de pagamento/)).toBeTruthy();
     expect(within(dialog).getByRole("button", { name: "Excluir dados remotos" }).hasAttribute("disabled")).toBe(true);
   });
+
+  it("usa a autenticação recente antes de abrir uma nova janela Google", async () => {
+    vi.stubEnv("VITE_SYNC_ENABLED", "true");
+    vi.resetModules();
+    const client = await import("../../sync/client");
+    const auth = await import("../../services/auth");
+    const intent = vi.spyOn(client.syncApi, "deletionIntent").mockResolvedValue({ nonce: "nonce", expiresAt: "2028-01-01" });
+    const remove = vi.spyOn(client.syncApi, "deleteRemote").mockResolvedValue({ deleted: true, syncEpoch: 2 });
+    const reauthenticate = vi.spyOn(auth, "reauthenticateWithGoogle").mockResolvedValue(undefined);
+    const manager = { activate: vi.fn(), syncNow: vi.fn(), disable: vi.fn(), refreshStatus: vi.fn(), schedule: vi.fn() } as unknown as SyncManager;
+    const { SyncSettingsCard } = await import("./SyncSettingsCard");
+    render(<SyncSettingsCard ownerUid="uid" manager={manager} snapshot={syncSnapshot({ hasRemoteData: true })} onChanged={vi.fn(async () => undefined)} onError={vi.fn()} onMessage={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Excluir dados remotos" }));
+    const dialog = screen.getByRole("dialog", { name: "Excluir dados remotos" });
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "EXCLUIR" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Excluir dados remotos" }));
+
+    await waitFor(() => expect(remove).toHaveBeenCalledWith("nonce"));
+    expect(intent).toHaveBeenCalledOnce();
+    expect(reauthenticate).not.toHaveBeenCalled();
+  });
+
+  it("reautentica somente quando o servidor exige sessão recente", async () => {
+    vi.stubEnv("VITE_SYNC_ENABLED", "true");
+    vi.resetModules();
+    const client = await import("../../sync/client");
+    const auth = await import("../../services/auth");
+    const intent = vi.spyOn(client.syncApi, "deletionIntent")
+      .mockRejectedValueOnce(new client.SyncHttpError(401, "Confirme novamente sua identidade."))
+      .mockResolvedValueOnce({ nonce: "nonce", expiresAt: "2028-01-01" });
+    const remove = vi.spyOn(client.syncApi, "deleteRemote").mockResolvedValue({ deleted: true, syncEpoch: 2 });
+    const reauthenticate = vi.spyOn(auth, "reauthenticateWithGoogle").mockResolvedValue(undefined);
+    const manager = { activate: vi.fn(), syncNow: vi.fn(), disable: vi.fn(), refreshStatus: vi.fn(), schedule: vi.fn() } as unknown as SyncManager;
+    const { SyncSettingsCard } = await import("./SyncSettingsCard");
+    render(<SyncSettingsCard ownerUid="uid" manager={manager} snapshot={syncSnapshot({ hasRemoteData: true })} onChanged={vi.fn(async () => undefined)} onError={vi.fn()} onMessage={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Excluir dados remotos" }));
+    const dialog = screen.getByRole("dialog", { name: "Excluir dados remotos" });
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "EXCLUIR" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Excluir dados remotos" }));
+
+    await waitFor(() => expect(remove).toHaveBeenCalledWith("nonce"));
+    expect(intent).toHaveBeenCalledTimes(2);
+    expect(reauthenticate).toHaveBeenCalledOnce();
+  });
 });
