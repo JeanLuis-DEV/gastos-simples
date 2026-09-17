@@ -17,6 +17,7 @@ import { InstitutionalContent } from "./InstitutionalContent";
 import { FinancialProfilesCard } from "./FinancialProfilesCard";
 import type { FeedbackProps } from "./types";
 import type { SyncManager, SyncSnapshot } from "../../sync/engine";
+import { canUseRemoteSyncForEntitlement } from "../../sync/config";
 import { SyncSettingsCard } from "./SyncSettingsCard";
 type Action = "clear" | "cancel" | undefined;
 export function SettingsView({
@@ -49,6 +50,7 @@ export function SettingsView({
   syncManager?: SyncManager;
   syncSnapshot?: SyncSnapshot;
 } & FeedbackProps) {
+  const remoteSyncAllowed = canUseRemoteSyncForEntitlement(entitlement.status);
   const [action, setAction] = useState<Action>(),
     [backupToImport, setBackupToImport] = useState<Backup>(),
     [busy, setBusy] = useState(false);
@@ -139,7 +141,7 @@ export function SettingsView({
         <h1 id="settings-title">Ajustes</h1>
       </div>
       <div className="settings-grid">
-        {syncManager && syncSnapshot && <SyncSettingsCard ownerUid={user.uid} manager={syncManager} snapshot={syncSnapshot} onChanged={onChanged} onError={onError} onMessage={onMessage} />}
+        {remoteSyncAllowed && syncManager && syncSnapshot && <SyncSettingsCard ownerUid={user.uid} manager={syncManager} snapshot={syncSnapshot} onChanged={onChanged} onError={onError} onMessage={onMessage} />}
         <FinancialProfilesCard
           ownerUid={user.uid}
           profiles={profiles}
@@ -225,7 +227,7 @@ export function SettingsView({
             )}
           </section>
         </Card>
-        <InstitutionalContent />
+        <InstitutionalContent syncAvailable={remoteSyncAllowed} />
       </div>
       <ConfirmModal
         open={Boolean(action)}

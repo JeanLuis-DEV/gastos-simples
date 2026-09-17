@@ -8,6 +8,7 @@ import type { Category, FinancialProfile, Transaction } from "../../domain/model
 import { recurringOccurrenceForMonth } from "../../domain/transactions";
 import type { AuthUser } from "../../services/auth";
 import { useSync } from "../../sync/useSync";
+import { canUseRemoteSyncForEntitlement } from "../../sync/config";
 import {
   categoriesRepository,
   ensureDefaultCategories,
@@ -48,7 +49,8 @@ export function DashboardApp({
   onLogout: () => void;
   onSubscriptionChanged?: (entitlement: Entitlement) => void;
 }) {
-  const { manager: syncManager, snapshot: syncSnapshot } = useSync(user.uid);
+  const remoteSyncAllowed = canUseRemoteSyncForEntitlement(entitlement.status);
+  const { manager: syncManager, snapshot: syncSnapshot } = useSync(user.uid, remoteSyncAllowed);
   const [view, setView] = useState<View>("dashboard"),
     [month, setMonth] = useState(localCivilMonth()),
     [transactions, setTransactions] = useState<Transaction[]>([]),
