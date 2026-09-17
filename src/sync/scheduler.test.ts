@@ -223,11 +223,11 @@ describe("agendamento orientado a eventos", () => {
     manager.stop();
   });
 
-  it("não faz requests periódicos durante dois minutos de ociosidade", async () => {
+  it("não faz requests periódicos durante trinta minutos de ociosidade", async () => {
     const manager = new SyncManager(ownerUid);
     await startAndReset(manager);
 
-    await vi.advanceTimersByTimeAsync(120_000);
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
 
     expect(mocks.status).not.toHaveBeenCalled();
     expect(mocks.pull).not.toHaveBeenCalled();
