@@ -17,6 +17,7 @@ import {
 import { getPublicConfig } from "../config";
 
 let initialized = false;
+let persistencePromise: Promise<void> | undefined;
 let loginInFlight: Promise<void> | undefined;
 function auth() {
   const config = getPublicConfig();
@@ -51,21 +52,29 @@ export function authErrorMessage(error: unknown) {
 
 async function configurePersistence(instance: ReturnType<typeof getAuth>) {
   if (initialized) return;
-  let lastError: unknown;
-  for (const persistence of [
-    indexedDBLocalPersistence,
-    browserLocalPersistence,
-    browserSessionPersistence,
-  ]) {
-    try {
-      await setPersistence(instance, persistence);
-      initialized = true;
-      return;
-    } catch (error) {
-      lastError = error;
-    }
+  if (!persistencePromise) {
+    persistencePromise = (async () => {
+      let lastError: unknown;
+      for (const persistence of [
+        indexedDBLocalPersistence,
+        browserLocalPersistence,
+        browserSessionPersistence,
+      ]) {
+        try {
+          await setPersistence(instance, persistence);
+          initialized = true;
+          return;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      throw lastError;
+    })().catch((error) => {
+      persistencePromise = undefined;
+      throw error;
+    });
   }
-  throw lastError;
+  return persistencePromise;
 }
 
 export function initializeAuth(
@@ -91,9 +100,16 @@ export function initializeAuth(
       onError(authErrorMessage(error));
     },
   );
-  void configurePersistence(instance)
-    .then(() => getRedirectResult(instance))
-    .catch((error) => onError(authErrorMessage(error)));
+  // O observer do Firebase aguarda o processamento do redirect. Chamar
+  // setPersistence antes de getRedirectResult pode bloquear ambos em uma
+  // sessão nova, deixando o evento de redirect pendente indefinidamente.
+  void getRedirectResult(instance)
+    .catch((error) => onError(authErrorMessage(error)))
+    .finally(() =>
+      configurePersistence(instance).catch((error) =>
+        onError(authErrorMessage(error)),
+      ),
+    );
   return () => {
     clearTimeout(readinessTimeout);
     unsubscribe();
@@ -114,6 +130,7 @@ export async function loginWithGoogle() {
 
 async function startGoogleLogin() {
   const instance = auth();
+  await configurePersistence(instance);
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
   const mobile =

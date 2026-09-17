@@ -61,16 +61,47 @@ afterEach(() => {
 });
 
 describe("autenticação Firebase", () => {
-  it("processa o retorno do redirect mobile depois de configurar persistência", async () => {
+  it("processa o retorno do redirect antes de configurar persistência", async () => {
     const { initializeAuth } = await service();
     initializeAuth(vi.fn());
     await settle();
 
     expect(mocks.setPersistence).toHaveBeenCalledOnce();
     expect(mocks.getRedirectResult).toHaveBeenCalledOnce();
-    expect(mocks.setPersistence.mock.invocationCallOrder[0]!).toBeLessThan(
-      mocks.getRedirectResult.mock.invocationCallOrder[0]!,
+    expect(mocks.getRedirectResult.mock.invocationCallOrder[0]!).toBeLessThan(
+      mocks.setPersistence.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it("não bloqueia getRedirectResult enquanto a persistência está pendente", async () => {
+    mocks.setPersistence.mockImplementation(() => new Promise(() => {}));
+    const { initializeAuth } = await service();
+
+    initializeAuth(vi.fn());
+    await settle();
+
+    expect(mocks.getRedirectResult).toHaveBeenCalledOnce();
+    expect(mocks.setPersistence).toHaveBeenCalledOnce();
+  });
+
+  it("compartilha a configuração de persistência entre bootstrap e login", async () => {
+    let resolvePersistence: (() => void) | undefined;
+    mocks.setPersistence.mockImplementation(
+      () => new Promise<void>((resolve) => (resolvePersistence = resolve)),
+    );
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true })));
+    const { initializeAuth, loginWithGoogle } = await service();
+
+    initializeAuth(vi.fn());
+    await settle();
+    const login = loginWithGoogle();
+    await settle();
+
+    expect(mocks.setPersistence).toHaveBeenCalledOnce();
+    expect(mocks.signInWithRedirect).not.toHaveBeenCalled();
+    resolvePersistence?.();
+    await login;
+    expect(mocks.signInWithRedirect).toHaveBeenCalledOnce();
   });
 
   it("mantém o listener ativo quando getRedirectResult falha", async () => {
@@ -113,6 +144,7 @@ describe("autenticação Firebase", () => {
     const { loginWithGoogle } = await service();
     await loginWithGoogle();
 
+    expect(mocks.setPersistence).toHaveBeenCalledOnce();
     expect(mocks.signInWithRedirect).toHaveBeenCalledOnce();
     expect(mocks.signInWithPopup).not.toHaveBeenCalled();
   });
@@ -134,6 +166,7 @@ describe("autenticação Firebase", () => {
 
     const first = loginWithGoogle();
     const second = loginWithGoogle();
+    await settle();
     expect(mocks.signInWithPopup).toHaveBeenCalledOnce();
     resolvePopup?.();
     await Promise.all([first, second]);
