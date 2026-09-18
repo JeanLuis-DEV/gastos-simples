@@ -16,6 +16,9 @@ import {
   acknowledgePush,
   applyRemotePage,
   prepareFullResync,
+  prepareRemoteSeed,
+  categoriesRepository,
+  profilesRepository,
 } from "./database";
 
 const item = (id: string, ownerUid = "sync-owner", changes: Partial<Transaction> = {}): Transaction => ({
@@ -196,5 +199,42 @@ describe("fundação local da sincronização", () => {
     expect(await transactionsRepository.list("sync-owner")).toEqual([expect.objectContaining({ id: "pending-local", description: "Ainda não enviada", serverVersion: 0 })]);
     expect(await listOutbox("sync-owner")).toEqual([expect.objectContaining({ recordId: "pending-local", baseVersion: 0, baseSnapshot: undefined })]);
     expect(await getSyncState("sync-owner")).toMatchObject({ cursor: 0, epoch: 2 });
+  });
+
+  it("reconstrói o grafo local em ordem topológica quando o remoto do novo epoch está vazio", async () => {
+    const timestamp = "2028-01-01T00:00:00.000Z";
+    await getSyncState("sync-owner");
+    await profilesRepository.put({ id: "profile:principal:sync-owner", ownerUid: "sync-owner", name: "Principal", createdAt: timestamp, updatedAt: timestamp }, "profile-initial");
+    await categoriesRepository.put({ id: "category", ownerUid: "sync-owner", name: "Casa", type: "expense", isDefault: false }, "category-initial");
+    await transactionsRepository.put(item("leaf-record"), "transaction-initial");
+    const initial = await listOutbox("sync-owner");
+    await acknowledgePush("sync-owner", initial, { results: initial.map((entry, index) => ({ mutationId: entry.mutationId, status: "applied", records: [{ entityType: entry.entityType, recordId: entry.recordId, version: 1, revision: index + 1, isDeleted: false }] })) });
+    const current = (await transactionsRepository.list("sync-owner"))[0]!;
+    await transactionsRepository.put({ ...current, description: "Alteração preservada" }, "leaf-only");
+
+    await prepareRemoteSeed("sync-owner", 3);
+
+    const seeded = (await listOutbox("sync-owner")).sort((left, right) => left.id.localeCompare(right.id));
+    expect(seeded.map((entry) => entry.entityType)).toEqual(["profile", "category", "transaction"]);
+    expect(seeded.every((entry) => entry.operation === "upsert" && entry.baseVersion === 0 && entry.baseSnapshot === undefined)).toBe(true);
+    expect(await transactionsRepository.list("sync-owner")).toEqual([expect.objectContaining({ id: "leaf-record", description: "Alteração preservada", serverVersion: 0 })]);
+    expect(await getSyncState("sync-owner")).toMatchObject({ cursor: 0, epoch: 3, seededEpoch: 3, lastError: undefined });
+  });
+
+  it("reescreve dependências locais e pendentes ao canonicalizar uma categoria", async () => {
+    await categoriesRepository.put({ id: "category-canonical", ownerUid: "sync-owner", name: "Casa", type: "expense", isDefault: false }, "category-canonical-mutation");
+    await categoriesRepository.put({ id: "category-alias", ownerUid: "sync-owner", name: "Casa", type: "expense", isDefault: false }, "category-alias-mutation");
+    await transactionsRepository.put(item("alias-dependent", "sync-owner", { categoryId: "category-alias" }), "dependent-mutation");
+    const pending = await listOutbox("sync-owner");
+    const aliasEntry = pending.find((entry) => entry.recordId === "category-alias")!;
+
+    await acknowledgePush("sync-owner", [aliasEntry], { results: [{ mutationId: aliasEntry.mutationId, status: "aliased", canonicalRecordId: "category-canonical" }] });
+
+    expect(await categoriesRepository.list("sync-owner")).toEqual([expect.objectContaining({ id: "category-canonical" })]);
+    expect(await transactionsRepository.list("sync-owner")).toEqual([expect.objectContaining({ id: "alias-dependent", categoryId: "category-canonical" })]);
+    expect(await listOutbox("sync-owner")).toContainEqual(expect.objectContaining({
+      recordId: "alias-dependent",
+      payload: expect.objectContaining({ categoryId: "category-canonical" }),
+    }));
   });
 });

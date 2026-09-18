@@ -47,6 +47,7 @@ export type SyncState = {
   deviceId: string;
   cursor: number;
   epoch: number;
+  seededEpoch?: number;
   enabled: boolean;
   lastSyncedAt?: string;
   consentVersion?: number;

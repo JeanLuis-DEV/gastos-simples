@@ -595,6 +595,57 @@ export async function prepareFullResync(ownerUid: string) {
   await done(tx, "Não foi possível preparar a atualização completa dos dados.");
 }
 
+const remoteSeedOrder: SyncEntityType[] = [
+  "profile",
+  "category",
+  "series",
+  "seriesSegment",
+  "transaction",
+  "calculator",
+];
+
+export async function prepareRemoteSeed(ownerUid: string, epoch: number) {
+  if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error("Epoch de sincronização inválido.");
+  const db = await openDatabase();
+  const tx = db.transaction([...Object.values(storeByEntity), "syncOutbox", "syncState", "syncBaseSnapshots"], "readwrite");
+  const outboxStore = tx.objectStore("syncOutbox");
+  const previousOutbox = await result<OutboxEntry[]>(outboxStore.index("ownerUid").getAll(ownerUid));
+  previousOutbox.forEach((entry) => outboxStore.delete(entry.id));
+  const createdAt = new Date().toISOString();
+
+  for (const [rank, entityType] of remoteSeedOrder.entries()) {
+    const store = tx.objectStore(storeByEntity[entityType]);
+    const records = await result<SyncPayload[]>(store.index("ownerUid").getAll(ownerUid));
+    for (const record of records) {
+      const next = { ...record, serverVersion: 0, serverRevision: undefined } as SyncPayload;
+      store.put(next);
+      if (next.isDeleted === true) continue;
+      const mutationId = `seed:${epoch}:${rank}:${crypto.randomUUID()}`;
+      outboxStore.put({
+        id: outboxId(ownerUid, mutationId, entityType, next.id),
+        ownerUid,
+        mutationId,
+        entityType,
+        recordId: next.id,
+        operation: "upsert",
+        baseVersion: 0,
+        payload: next,
+        fingerprint: syncFingerprint(entityType, "upsert", next),
+        createdAt,
+      } satisfies OutboxEntry);
+    }
+  }
+
+  const snapshotStore = tx.objectStore("syncBaseSnapshots");
+  const snapshots = await result<Array<{ id: string }>>(snapshotStore.index("ownerUid").getAll(ownerUid));
+  snapshots.forEach((item) => snapshotStore.delete(item.id));
+  const stateStore = tx.objectStore("syncState");
+  const state = await result<SyncState | undefined>(stateStore.get(ownerUid));
+  if (!state) throw new Error("Estado de sincronização inexistente.");
+  stateStore.put({ ...state, epoch, seededEpoch: epoch, cursor: 0, lastError: undefined });
+  await done(tx, "Não foi possível preparar os dados locais para sincronização.");
+}
+
 const storeByEntity: Record<SyncEntityType, Exclude<StoreName, "preferences">> = {
   transaction: "transactions",
   category: "categories",
@@ -674,6 +725,30 @@ export async function acknowledgePush(ownerUid: string, entries: OutboxEntry[], 
       const current = await result<SyncPayload | undefined>(tx.objectStore(storeByEntity[entry.entityType]).get(entry.recordId));
       if (resultItem.status === "aliased") {
         if (current?.ownerUid === ownerUid) tx.objectStore(storeByEntity[entry.entityType]).delete(entry.recordId);
+        if (entry.entityType === "category" && resultItem.canonicalRecordId) {
+          for (const dependentType of ["seriesSegment", "transaction"] as const) {
+            const dependentStore = tx.objectStore(storeByEntity[dependentType]);
+            const dependents = await result<SyncPayload[]>(dependentStore.index("ownerUid").getAll(ownerUid));
+            for (const dependent of dependents) {
+              if ((dependent as Transaction | TransactionSeriesSegment).categoryId !== entry.recordId) continue;
+              dependentStore.put({ ...dependent, categoryId: resultItem.canonicalRecordId } as SyncPayload);
+            }
+          }
+          const pending = await result<OutboxEntry[]>(tx.objectStore("syncOutbox").index("ownerUid").getAll(ownerUid));
+          for (const pendingEntry of pending) {
+            const payload = pendingEntry.payload as SyncPayload & { categoryId?: string };
+            const baseSnapshot = pendingEntry.baseSnapshot as (SyncPayload & { categoryId?: string }) | undefined;
+            if (payload.categoryId !== entry.recordId && baseSnapshot?.categoryId !== entry.recordId) continue;
+            const nextPayload = payload.categoryId === entry.recordId ? { ...payload, categoryId: resultItem.canonicalRecordId } as SyncPayload : pendingEntry.payload;
+            const nextBase = baseSnapshot?.categoryId === entry.recordId ? { ...baseSnapshot, categoryId: resultItem.canonicalRecordId } as SyncPayload : pendingEntry.baseSnapshot;
+            tx.objectStore("syncOutbox").put({
+              ...pendingEntry,
+              payload: nextPayload,
+              baseSnapshot: nextBase,
+              fingerprint: syncFingerprint(pendingEntry.entityType, pendingEntry.operation, nextPayload),
+            } satisfies OutboxEntry);
+          }
+        }
       } else if (current?.ownerUid === ownerUid) {
         const metadata = resultItem.records?.find((record) => record.entityType === entry.entityType && record.recordId === entry.recordId);
         if (metadata) {

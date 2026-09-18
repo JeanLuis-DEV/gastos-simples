@@ -7,6 +7,7 @@ import {
   listOutbox,
   listSyncConflicts,
   prepareFullResync,
+  prepareRemoteSeed,
   replaceSyncState,
   updateSyncState,
 } from "../storage/database";
@@ -145,13 +146,17 @@ function nextPushChunk(entries: OutboxEntry[]) {
   for (const entry of entries) {
     grouped.set(entry.mutationId, [...(grouped.get(entry.mutationId) ?? []), entry]);
   }
+  let selectedSeedRank: string | undefined;
   for (const group of grouped.values()) {
+    const groupSeedRank = group[0]!.mutationId.match(/^seed:\d+:(\d+):/)?.[1];
+    if (selected.length && selectedSeedRank !== undefined && groupSeedRank !== selectedSeedRank) break;
     if (selected.length && group.some((entry) => entry.semantic)) break;
     const candidate = [...selected, ...group];
     const { operations } = wireEntries(candidate);
     const bytes = new TextEncoder().encode(JSON.stringify({ protocolVersion: 1, syncEpoch: 1, batchId: "x".repeat(43), deviceId: "x".repeat(36), operations })).byteLength;
     if (operations.length > 100 || bytes > MAX_PUSH_BYTES) break;
     selected.push(...group);
+    selectedSeedRank ??= groupSeedRank;
     if (group.some((entry) => entry.semantic)) break;
   }
   return selected;
@@ -280,6 +285,7 @@ export class SyncManager {
     if (!canUseRemoteSync()) throw new Error("A sincronização ainda não está disponível.");
     const state = await getSyncState(this.ownerUid);
     const remote = await syncApi.activate(state.deviceId, consentVersion);
+    if (remote.highWatermark === 0) await prepareRemoteSeed(this.ownerUid, remote.syncEpoch);
     await replaceSyncState(this.ownerUid, { enabled: true, consentVersion, consentAcceptedAt: remote.consentAcceptedAt, epoch: remote.syncEpoch, cursor: 0, lastError: undefined });
     await recordSuccessfulEntitlement(this.ownerUid);
     this.publish({ enabled: true, available: true, canPush: true, status: "syncing" });
@@ -352,6 +358,10 @@ export class SyncManager {
         if (status.canPush) await recordSuccessfulEntitlement(this.ownerUid, status.serverTime);
         let state = await getSyncState(this.ownerUid);
         if (state.epoch !== status.syncEpoch) state = await replaceSyncState(this.ownerUid, { epoch: status.syncEpoch, cursor: 0 });
+        if (status.canPush && state.seededEpoch !== status.syncEpoch) {
+          await prepareRemoteSeed(this.ownerUid, status.syncEpoch);
+          state = await getSyncState(this.ownerUid);
+        }
         let cursor = state.cursor;
         const highWatermark = status.highWatermark;
         do {

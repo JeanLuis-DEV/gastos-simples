@@ -9,8 +9,10 @@ const mocks = vi.hoisted(() => ({
   listOutbox: vi.fn(),
   listSyncConflicts: vi.fn(),
   prepareFullResync: vi.fn(),
+  prepareRemoteSeed: vi.fn(),
   replaceSyncState: vi.fn(),
   updateSyncState: vi.fn(),
+  activate: vi.fn(),
   status: vi.fn(),
   pull: vi.fn(),
   push: vi.fn(),
@@ -25,6 +27,7 @@ vi.mock("../storage/database", () => ({
   listOutbox: mocks.listOutbox,
   listSyncConflicts: mocks.listSyncConflicts,
   prepareFullResync: mocks.prepareFullResync,
+  prepareRemoteSeed: mocks.prepareRemoteSeed,
   replaceSyncState: mocks.replaceSyncState,
   updateSyncState: mocks.updateSyncState,
 }));
@@ -37,7 +40,7 @@ vi.mock("./client", async (importOriginal) => {
       status: mocks.status,
       pull: mocks.pull,
       push: mocks.push,
-      activate: vi.fn(),
+      activate: mocks.activate,
       disable: vi.fn(),
       importRemote: vi.fn(),
     },
@@ -70,6 +73,7 @@ const remoteStatus = {
   canPull: true,
   canExport: true,
   canDelete: true,
+  hasRemoteData: false,
   serverTime: "2026-09-16T12:00:00.000Z",
 };
 
@@ -141,6 +145,12 @@ beforeEach(() => {
     serverTime: remoteStatus.serverTime,
     records: [],
   });
+  mocks.activate.mockResolvedValue({
+    enabled: true,
+    syncEpoch: 1,
+    highWatermark: 0,
+    consentAcceptedAt: remoteStatus.serverTime,
+  });
 });
 
 afterEach(() => {
@@ -149,6 +159,50 @@ afterEach(() => {
 });
 
 describe("agendamento orientado a eventos", () => {
+  it("recria a outbox completa antes do push quando o epoch local ainda não foi semeado", async () => {
+    const manager = new SyncManager(ownerUid);
+    await startAndReset(manager);
+    mocks.status.mockResolvedValue({ ...remoteStatus, canPush: true, highWatermark: 7, hasRemoteData: true });
+
+    await manager.syncNow();
+
+    expect(mocks.prepareRemoteSeed).toHaveBeenCalledWith(ownerUid, 1);
+    expect(mocks.prepareRemoteSeed.mock.invocationCallOrder[0]!).toBeLessThan(mocks.listOutbox.mock.invocationCallOrder[0]!);
+    manager.stop();
+  });
+
+  it("envia o reseed em camadas para confirmar aliases antes dos registros dependentes", async () => {
+    const manager = new SyncManager(ownerUid);
+    await startAndReset(manager);
+    const createdAt = remoteStatus.serverTime;
+    let pending = [
+      { id: `${ownerUid}:seed:1:0:profile:profile:profile-1`, ownerUid, mutationId: "seed:1:0:profile", entityType: "profile" as const, recordId: "profile-1", operation: "upsert" as const, baseVersion: 0, payload: { id: "profile-1", ownerUid, name: "Principal", createdAt, updatedAt: createdAt }, fingerprint: "profile", createdAt },
+      { id: `${ownerUid}:seed:1:1:category:category:category-1`, ownerUid, mutationId: "seed:1:1:category", entityType: "category" as const, recordId: "category-1", operation: "upsert" as const, baseVersion: 0, payload: { id: "category-1", ownerUid, name: "Casa", type: "expense" as const, isDefault: false }, fingerprint: "category", createdAt },
+      { id: `${ownerUid}:seed:1:4:transaction:transaction:transaction-1`, ownerUid, mutationId: "seed:1:4:transaction", entityType: "transaction" as const, recordId: "transaction-1", operation: "upsert" as const, baseVersion: 0, payload: { id: "transaction-1", ownerUid, profileId: "profile-1", occurrenceKey: "single:transaction-1", description: "Teste", amountCents: 100, type: "expense" as const, status: "pending" as const, dueDate: "2028-01-01", categoryId: "category-1", categoryName: "Casa", notes: "", kind: "single" as const, createdAt, updatedAt: createdAt }, fingerprint: "transaction", createdAt },
+    ];
+    mocks.getSyncState.mockResolvedValue({ ...localState, seededEpoch: 1 });
+    mocks.status.mockResolvedValue({ ...remoteStatus, canPush: true });
+    mocks.listOutbox.mockImplementation(async () => pending);
+    mocks.push.mockImplementation(async ({ batchId, operations }: { batchId: string; operations: Array<{ mutationId: string; entityType?: string }> }) => ({
+      protocolVersion: 1 as const,
+      batchId,
+      syncEpoch: 1,
+      committedRevision: operations.length,
+      highWatermark: operations.length,
+      serverTime: createdAt,
+      results: operations.map((operation) => ({ mutationId: operation.mutationId, status: "applied" as const, records: [] })),
+    }));
+    mocks.acknowledgePush.mockImplementation(async (_owner, wired) => {
+      const acknowledged = new Set(wired.map((entry: { id: string }) => entry.id));
+      pending = pending.filter((entry) => !acknowledged.has(entry.id));
+    });
+
+    await manager.syncNow();
+
+    expect(mocks.push.mock.calls.map(([request]) => request.operations.map((operation: { entityType?: string }) => operation.entityType))).toEqual([["profile"], ["category"], ["transaction"]]);
+    manager.stop();
+  });
+
   it("não agenda outra rodada após concluir nem ao publicar lastSyncedAt", async () => {
     const manager = new SyncManager(ownerUid);
     await startAndReset(manager);
