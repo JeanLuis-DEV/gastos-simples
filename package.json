@@ -8,6 +8,7 @@
     "test": "vitest run",
     "test:d1": "node scripts/test-sync-d1.mjs",
     "validate:staging": "node scripts/validate-staging-build.mjs",
+    "validate:production": "node scripts/validate-production-build.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview"
   },
