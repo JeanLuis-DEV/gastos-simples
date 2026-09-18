@@ -48,6 +48,7 @@ export type SyncState = {
   cursor: number;
   epoch: number;
   seededEpoch?: number;
+  remoteSeedVersion?: number;
   enabled: boolean;
   lastSyncedAt?: string;
   consentVersion?: number;

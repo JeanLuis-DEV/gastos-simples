@@ -8,6 +8,7 @@ import {
   listSyncConflicts,
   prepareFullResync,
   prepareRemoteSeed,
+  REMOTE_SEED_VERSION,
   replaceSyncState,
   updateSyncState,
 } from "../storage/database";
@@ -358,7 +359,7 @@ export class SyncManager {
         if (status.canPush) await recordSuccessfulEntitlement(this.ownerUid, status.serverTime);
         let state = await getSyncState(this.ownerUid);
         if (state.epoch !== status.syncEpoch) state = await replaceSyncState(this.ownerUid, { epoch: status.syncEpoch, cursor: 0 });
-        if (status.canPush && state.seededEpoch !== status.syncEpoch) {
+        if (status.canPush && (state.seededEpoch !== status.syncEpoch || state.remoteSeedVersion !== REMOTE_SEED_VERSION)) {
           await prepareRemoteSeed(this.ownerUid, status.syncEpoch);
           state = await getSyncState(this.ownerUid);
         }

@@ -218,7 +218,28 @@ describe("fundação local da sincronização", () => {
     expect(seeded.map((entry) => entry.entityType)).toEqual(["profile", "category", "transaction"]);
     expect(seeded.every((entry) => entry.operation === "upsert" && entry.baseVersion === 0 && entry.baseSnapshot === undefined)).toBe(true);
     expect(await transactionsRepository.list("sync-owner")).toEqual([expect.objectContaining({ id: "leaf-record", description: "Alteração preservada", serverVersion: 0 })]);
-    expect(await getSyncState("sync-owner")).toMatchObject({ cursor: 0, epoch: 3, seededEpoch: 3, lastError: undefined });
+    expect(await getSyncState("sync-owner")).toMatchObject({ cursor: 0, epoch: 3, seededEpoch: 3, remoteSeedVersion: 2, lastError: undefined });
+  });
+
+  it("repara referência legada para a categoria canônica sem alterar o lançamento", async () => {
+    const timestamp = "2028-01-01T00:00:00.000Z";
+    await getSyncState("sync-owner");
+    await profilesRepository.put({ id: "profile:principal:sync-owner", ownerUid: "sync-owner", name: "Principal", createdAt: timestamp, updatedAt: timestamp }, "profile-repair");
+    await categoriesRepository.put({ id: "category-canonical", ownerUid: "sync-owner", name: "Casa", type: "expense", isDefault: false }, "category-repair");
+    await transactionsRepository.put(item("legacy-reference", "sync-owner", { categoryId: "category-old-alias" }), "transaction-repair");
+
+    await prepareRemoteSeed("sync-owner", 4);
+
+    expect(await transactionsRepository.list("sync-owner")).toEqual([expect.objectContaining({
+      id: "legacy-reference",
+      categoryId: "category-canonical",
+      description: "Teste",
+      amountCents: 100,
+    })]);
+    expect(await listOutbox("sync-owner")).toContainEqual(expect.objectContaining({
+      recordId: "legacy-reference",
+      payload: expect.objectContaining({ categoryId: "category-canonical" }),
+    }));
   });
 
   it("reescreve dependências locais e pendentes ao canonicalizar uma categoria", async () => {

@@ -603,6 +603,7 @@ const remoteSeedOrder: SyncEntityType[] = [
   "transaction",
   "calculator",
 ];
+export const REMOTE_SEED_VERSION = 2;
 
 export async function prepareRemoteSeed(ownerUid: string, epoch: number) {
   if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error("Epoch de sincronização inválido.");
@@ -612,12 +613,45 @@ export async function prepareRemoteSeed(ownerUid: string, epoch: number) {
   const previousOutbox = await result<OutboxEntry[]>(outboxStore.index("ownerUid").getAll(ownerUid));
   previousOutbox.forEach((entry) => outboxStore.delete(entry.id));
   const createdAt = new Date().toISOString();
+  const recordsByEntity = new Map<SyncEntityType, SyncPayload[]>();
+  for (const entityType of remoteSeedOrder) {
+    const store = tx.objectStore(storeByEntity[entityType]);
+    recordsByEntity.set(entityType, await result<SyncPayload[]>(store.index("ownerUid").getAll(ownerUid)));
+  }
+  const activeProfiles = (recordsByEntity.get("profile") ?? [])
+    .filter((record) => record.isDeleted !== true)
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const activeCategories = (recordsByEntity.get("category") ?? [])
+    .filter((record) => record.isDeleted !== true) as Category[];
+  const activeProfileIds = new Set(activeProfiles.map((record) => record.id));
+  const activeCategoryIds = new Set(activeCategories.map((record) => record.id));
+
+  const repairReferences = (entityType: SyncEntityType, record: SyncPayload) => {
+    if (record.isDeleted === true || (entityType !== "transaction" && entityType !== "seriesSegment")) return record;
+    const dependent = record as Transaction | TransactionSeriesSegment;
+    let profileId = dependent.profileId;
+    if (!activeProfileIds.has(profileId) && activeProfiles.length === 1) profileId = activeProfiles[0]!.id;
+    let categoryId = dependent.categoryId;
+    let categoryName = dependent.categoryName;
+    if (!activeCategoryIds.has(categoryId)) {
+      const matches = activeCategories
+        .filter((category) => category.type === dependent.type && categoryCanonicalKey(category) === categoryCanonicalKey({ name: dependent.categoryName, type: dependent.type }))
+        .sort((left, right) => left.id.localeCompare(right.id));
+      if (matches.length) {
+        categoryId = matches[0]!.id;
+        categoryName = matches[0]!.name;
+      }
+    }
+    return profileId === dependent.profileId && categoryId === dependent.categoryId && categoryName === dependent.categoryName
+      ? record
+      : { ...record, profileId, categoryId, categoryName } as SyncPayload;
+  };
 
   for (const [rank, entityType] of remoteSeedOrder.entries()) {
     const store = tx.objectStore(storeByEntity[entityType]);
-    const records = await result<SyncPayload[]>(store.index("ownerUid").getAll(ownerUid));
-    for (const record of records) {
-      const next = { ...record, serverVersion: 0, serverRevision: undefined } as SyncPayload;
+    for (const record of recordsByEntity.get(entityType) ?? []) {
+      const repaired = repairReferences(entityType, record);
+      const next = { ...repaired, serverVersion: 0, serverRevision: undefined } as SyncPayload;
       store.put(next);
       if (next.isDeleted === true) continue;
       const mutationId = `seed:${epoch}:${rank}:${crypto.randomUUID()}`;
@@ -642,7 +676,7 @@ export async function prepareRemoteSeed(ownerUid: string, epoch: number) {
   const stateStore = tx.objectStore("syncState");
   const state = await result<SyncState | undefined>(stateStore.get(ownerUid));
   if (!state) throw new Error("Estado de sincronização inexistente.");
-  stateStore.put({ ...state, epoch, seededEpoch: epoch, cursor: 0, lastError: undefined });
+  stateStore.put({ ...state, epoch, seededEpoch: epoch, remoteSeedVersion: REMOTE_SEED_VERSION, cursor: 0, lastError: undefined });
   await done(tx, "Não foi possível preparar os dados locais para sincronização.");
 }
 
