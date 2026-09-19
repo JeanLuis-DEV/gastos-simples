@@ -46,9 +46,17 @@ export async function syncEntitlement(identity: AuthIdentity, env: Env, refreshP
   return "other";
 }
 
+export function isSyncEntitlementEligible(status: SyncEntitlement) {
+  return ["trial", "active", "admin"].includes(status);
+}
+
+export function requireSyncEntitlement(status: SyncEntitlement) {
+  if (!isSyncEntitlementEligible(status))
+    throw new HttpError(403, "Sua assinatura não permite usar a sincronização.");
+}
+
 export function requirePushEntitlement(status: SyncEntitlement) {
-  if (!["trial", "active", "admin"].includes(status))
-    throw new HttpError(403, "Sua assinatura não permite enviar alterações.");
+  requireSyncEntitlement(status);
 }
 
 export async function ensureSyncAccount(identity: AuthIdentity, env: Env) {
@@ -78,7 +86,7 @@ export async function hasRemoteFinancialData(env: Env, ownerUid: string) {
 
 export async function updateRetention(env: Env, ownerUid: string, status: SyncEntitlement) {
   const now = new Date();
-  const eligible = ["trial", "active", "admin"].includes(status);
+  const eligible = isSyncEntitlementEligible(status);
   if (eligible) {
     await env.DB.prepare(
       "INSERT INTO sync_retention (firebase_uid,entitlement_status,became_ineligible_at,purge_after,reactivated_at,updated_at) VALUES (?,?,NULL,NULL,?,?) ON CONFLICT(firebase_uid) DO UPDATE SET entitlement_status=excluded.entitlement_status,became_ineligible_at=NULL,purge_after=NULL,reactivated_at=excluded.reactivated_at,updated_at=excluded.updated_at",

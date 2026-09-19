@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { D1PreparedStatement, Env } from "../types";
-import { hasRemoteFinancialData, isSyncCanaryAllowed, rateLimitSync, requirePublishedSyncPolicy, requirePushEntitlement, requireRecentAuthentication, requireSyncEnabled, syncEntitlement, updateRetention } from "./syncAccess";
+import { hasRemoteFinancialData, isSyncCanaryAllowed, isSyncEntitlementEligible, rateLimitSync, requirePublishedSyncPolicy, requirePushEntitlement, requireRecentAuthentication, requireSyncEnabled, requireSyncEntitlement, syncEntitlement, updateRetention } from "./syncAccess";
 import { SYNC_PRIVACY_POLICY_LABEL } from "../../shared/syncPolicy";
 
 function environment(subscription?: { mp_subscription_id: string | null; status_normalized: string; end_at: string | null }, hasRemoteData = false) {
@@ -47,6 +47,16 @@ describe("acesso e retenção da sincronização", () => {
 
   it.each(["paused", "cancelled", "expired", "none"])("bloqueia push para %s", (status) =>
     expect(() => requirePushEntitlement(status as "paused")).toThrow());
+
+  it.each(["trial", "active", "admin"])("permite sincronização para %s", (status) => {
+    expect(isSyncEntitlementEligible(status as "trial")).toBe(true);
+    expect(() => requireSyncEntitlement(status as "trial")).not.toThrow();
+  });
+
+  it.each(["paused", "cancelled", "expired", "none", "other"])("bloqueia sincronização para %s", (status) => {
+    expect(isSyncEntitlementEligible(status as "paused")).toBe(false);
+    expect(() => requireSyncEntitlement(status as "paused")).toThrow();
+  });
 
   it("exige autenticação dos últimos cinco minutos para exclusão", () => {
     expect(() => requireRecentAuthentication({ uid: "uid", email: "u@example.test", authTime: 970 }, 1_000)).not.toThrow();

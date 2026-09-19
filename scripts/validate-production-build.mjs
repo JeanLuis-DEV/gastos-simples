@@ -44,7 +44,7 @@ if (value("VITE_FIREBASE_PROJECT_ID") !== "gastos-simples-8bd4e")
   throw new Error("Production bundle does not use the production Firebase project.");
 if (value("VITE_API_BASE_URL") !== "/api")
   throw new Error("Production bundle does not use the same-origin API.");
-if (value("VITE_SYNC_ENABLED") !== "true" || value("VITE_SYNC_CANARY_ADMIN_ONLY") !== "true")
-  throw new Error("Production bundle does not preserve the current sync rollout flags.");
+if (value("VITE_SYNC_ENABLED") !== "true" || value("VITE_SYNC_CANARY_ADMIN_ONLY") !== "false")
+  throw new Error("Production bundle does not enable sync for eligible subscribers.");
 
 console.log("Production bundle configuration validated.");

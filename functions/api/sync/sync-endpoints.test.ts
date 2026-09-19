@@ -8,11 +8,13 @@ vi.mock("../../_shared/syncAccess", async () => {
     ensureSyncAccount: vi.fn(async () => ({ sync_epoch: 1, revision: 0, activated_at: "2028-01-01", disabled_at: null })),
     rateLimitSync: vi.fn(),
     requirePushEntitlement: vi.fn(),
+    requireSyncEntitlement: vi.fn(),
     requireSyncEnabled: vi.fn((env: { SYNC_ENABLED?: string }) => { if (env.SYNC_ENABLED !== "true") throw new HttpError(503, "Sincronização indisponível."); }),
     requirePublishedSyncPolicy: vi.fn(),
     isSyncPolicyPublished: vi.fn(() => true),
     requireSyncCanaryAccess: vi.fn(),
     isSyncCanaryAllowed: vi.fn(() => true),
+    isSyncEntitlementEligible: vi.fn((status: string) => ["trial", "active", "admin"].includes(status)),
     hasRemoteFinancialData: vi.fn(async () => true),
     syncEntitlement: vi.fn(async () => "active"),
     updateRetention: vi.fn(),
@@ -24,7 +26,9 @@ vi.mock("../../_shared/syncEngine", () => ({
 }));
 
 import { authenticate } from "../../_shared/auth";
-import { pushSync } from "../../_shared/syncEngine";
+import { HttpError } from "../../_shared/http";
+import { requireSyncEntitlement, syncEntitlement } from "../../_shared/syncAccess";
+import { pullSync, pushSync } from "../../_shared/syncEngine";
 import type { D1PreparedStatement, Env, PagesContext } from "../../types";
 import { onRequestPost as activate } from "./activate";
 import { onRequestPost as disable } from "./disable";
@@ -34,6 +38,9 @@ import { onRequestGet as status } from "./status";
 import { SYNC_PRIVACY_POLICY_LABEL, SYNC_PRIVACY_POLICY_VERSION } from "../../../shared/syncPolicy";
 
 const mockedAuthenticate = vi.mocked(authenticate);
+const mockedRequireSyncEntitlement = vi.mocked(requireSyncEntitlement);
+const mockedSyncEntitlement = vi.mocked(syncEntitlement);
+const mockedPull = vi.mocked(pullSync);
 const mockedPush = vi.mocked(pushSync);
 const body = {
   protocolVersion: 1, syncEpoch: 1, batchId: "batch", deviceId: "device",
@@ -98,5 +105,40 @@ describe("endpoints de sincronização", () => {
     expect(validResponse.status).toBe(200);
     const invalidResponse = await activate(context("true", { protocolVersion: 1, deviceId: "device", consentVersion: SYNC_PRIVACY_POLICY_VERSION, ownerUid: "other" }, "/api/sync/activate", "POST"));
     expect(invalidResponse.status).toBe(400);
+  });
+
+  it.each(["active", "trial", "admin"] as const)("permite pull para entitlement %s", async (entitlement) => {
+    mockedSyncEntitlement.mockResolvedValueOnce(entitlement);
+    const response = await pull(context("true", undefined, "/api/sync/pull?cursor=0&limit=1&epoch=1&deviceId=device&protocolVersion=1", "GET"));
+    expect(response.status).toBe(200);
+    expect(mockedRequireSyncEntitlement).toHaveBeenCalledWith(entitlement);
+  });
+
+  it.each(["cancelled", "expired", "none"] as const)("bloqueia pull para entitlement %s", async (entitlement) => {
+    mockedSyncEntitlement.mockResolvedValueOnce(entitlement);
+    mockedRequireSyncEntitlement.mockImplementationOnce(() => {
+      throw new HttpError(403, "Sua assinatura não permite usar a sincronização.");
+    });
+    const response = await pull(context("true", undefined, "/api/sync/pull?cursor=0&limit=1&epoch=1&deviceId=device&protocolVersion=1", "GET"));
+    expect(response.status).toBe(403);
+    expect(mockedPull).not.toHaveBeenCalled();
+  });
+
+  it.each(["active", "trial", "admin"] as const)("informa sincronização disponível no status para entitlement %s", async (entitlement) => {
+    mockedSyncEntitlement.mockResolvedValueOnce(entitlement);
+    const response = await status(context("true", undefined, "/api/sync/status", "GET"));
+    expect(await response.json()).toMatchObject({ available: true, canPush: true, canPull: true });
+  });
+
+  it.each(["cancelled", "expired", "none"] as const)("não disponibiliza sincronização no status para entitlement %s", async (entitlement) => {
+    mockedSyncEntitlement.mockResolvedValueOnce(entitlement);
+    const response = await status(context("true", undefined, "/api/sync/status", "GET"));
+    expect(await response.json()).toMatchObject({ available: false, canPush: false, canPull: false });
+  });
+
+  it("bloqueia status sem autenticação", async () => {
+    mockedAuthenticate.mockRejectedValueOnce(new HttpError(401, "Autenticação necessária."));
+    const response = await status(context("true", undefined, "/api/sync/status", "GET"));
+    expect(response.status).toBe(401);
   });
 });

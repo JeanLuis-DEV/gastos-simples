@@ -18,6 +18,8 @@ import { TransactionFilters } from "./TransactionFilters";
 import { TransactionForm, type TransactionPrefill } from "./TransactionForm";
 import type { DataProps } from "./types";
 
+const UNDO_DELETE_TIMEOUT_MS = 5000;
+
 export function TransactionsView({
   ownerUid,
   items,
@@ -68,6 +70,11 @@ export function TransactionsView({
       setOpen(true);
     }
   }, [prefill]);
+  useEffect(() => {
+    if (!lastDeleted.length) return;
+    const timer = setTimeout(() => setLastDeleted([]), UNDO_DELETE_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [lastDeleted]);
   const restoreSettleFocus = () => {
     setTimeout(() => setTimeout(() => settleTrigger.current?.focus(), 0), 0);
   };

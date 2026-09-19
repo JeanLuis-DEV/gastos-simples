@@ -25,4 +25,15 @@ describe("configuração pública da sincronização", () => {
     expect(canUseRemoteSyncForEntitlement("active")).toBe(false);
     expect(canUseRemoteSyncForEntitlement("trial")).toBe(false);
   });
+
+  it("libera somente entitlements elegíveis quando a restrição administrativa está desativada", async () => {
+    vi.stubEnv("VITE_SYNC_ENABLED", "true");
+    vi.stubEnv("VITE_SYNC_CANARY_ADMIN_ONLY", "false");
+    vi.resetModules();
+    const { canUseRemoteSyncForEntitlement } = await import("./config");
+    for (const status of ["active", "trial", "admin"] as const)
+      expect(canUseRemoteSyncForEntitlement(status)).toBe(true);
+    for (const status of ["cancelled", "expired", "none", "paused", "temporary_error"] as const)
+      expect(canUseRemoteSyncForEntitlement(status)).toBe(false);
+  });
 });

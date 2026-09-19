@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { LoginView } from "../auth/LoginView";
 import { CalculatorView } from "./CalculatorView";
@@ -442,6 +442,27 @@ describe("fluxos acessíveis da interface", () => {
     fireEvent.click(screen.getByRole("button", { name: "Excluir" }));
     expect(screen.getByRole("heading", { name: "Excluir lançamento" })).toBeTruthy();
     expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancelar" })).toBeTruthy();
+  });
+
+  it("remove automaticamente a opção de desfazer cinco segundos após a exclusão", async () => {
+    const timeout = vi.spyOn(globalThis, "setTimeout");
+    try {
+      const item = transaction("undo-timeout", "expense", "undo-timeout-user");
+      render(
+        <TransactionsView ownerUid={item.ownerUid} items={[item]} categories={[]} month="2028-01" onPrefillUsed={vi.fn()} onChanged={vi.fn(async () => {})} onError={vi.fn()} onMessage={vi.fn()} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Excluir" }));
+      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Excluir" }));
+      expect(await screen.findByRole("button", { name: "Desfazer" })).toBeTruthy();
+
+      const dismiss = timeout.mock.calls.find(([, delay]) => delay === 5000)?.[0];
+      expect(dismiss).toBeTypeOf("function");
+      act(() => (dismiss as () => void)());
+
+      expect(screen.queryByRole("button", { name: "Desfazer" })).toBeNull();
+    } finally {
+      timeout.mockRestore();
+    }
   });
 
   it("confirma ou cancela categoria livre e explica proteção por uso ativo", async () => {

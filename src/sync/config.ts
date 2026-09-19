@@ -28,5 +28,6 @@ export function canUseRemoteSync() {
 }
 
 export function canUseRemoteSyncForEntitlement(status: EntitlementStatus) {
-  return canUseRemoteSync() && (!SYNC_CANARY_ADMIN_ONLY || status === "admin");
+  const eligible = ["active", "trial", "admin"].includes(status);
+  return canUseRemoteSync() && eligible && (!SYNC_CANARY_ADMIN_ONLY || status === "admin");
 }
